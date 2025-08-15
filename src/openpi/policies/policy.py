@@ -33,6 +33,9 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
     ):
         # self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+        self._rtc_new_obs_sample_actions_1 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_1)  # 只有状态更新，只有后缀每次都前向
+        self._rtc_new_obs_sample_actions_2 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_2)  # 图像也更新，前缀和后缀每次都重新前向
+        self._rtc_new_obs_sample_actions_3 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_3)  # 图像也更新，但是只更新两次
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._rng = rng or jax.random.key(0)
@@ -40,9 +43,6 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self.first_call = True
         self.last_actions = None
-        # self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)
-        self._rtc_only_actions = nnx_utils.module_jit(model.rtc_only_actions)
-        # self._rit_actions = nnx_utils.module_jit(model.rit_actions)
         self.debug_counter = 0
 
     @override
@@ -56,9 +56,7 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
 
-        # print(f"first_call: {self.first_call}")
-        # print(f"6.[标记] 线程:{threading.current_thread().name} | model id={id(self._model)}")
-        actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_only_actions(
+        actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_3(
             sample_rng,
             _model.Observation.from_dict(inputs),
             self.first_call,
@@ -94,14 +92,13 @@ class Policy(BasePolicy):
         self.first_call = True
         self.last_actions = None
         self.debug_counter = 0
-        # rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = None
+        rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = None
 
     def update_obs(self, new_obs: dict) -> None:
         inputs = jax.tree.map(lambda x: x, new_obs)
         inputs = self._input_transform(inputs)
         # Make a batch and convert to jax.Array.
         inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-        # print(f"5.[标记] 线程:{threading.current_thread().name} | model id={id(self._model)}, id(RTC_STORE)={id(rtc_store.RTC_STORE)}")
         with rtc_store.RTC_STORE_LOCK:
             rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = _model.Observation.from_dict(inputs)
 

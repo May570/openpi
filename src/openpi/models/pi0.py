@@ -15,7 +15,6 @@ from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 
 from jax.experimental import io_callback
-import time
 import openpi.shared.rtc_store as rtc_store
 
 logger = logging.getLogger("openpi")
@@ -328,121 +327,7 @@ class Pi0(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
     
-    def rit_actions(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        first_call: bool,
-        last_actions: jax.Array,
-        count: int,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        rti_steps: int | at.Int[at.Array, ""] = 2,
-        rti_t0: float = 1.0,
-    ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        self.action_horizon = 10
-        delay_length = 3
-        observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        batch_size = observation.state.shape[0]
-        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
-
-        if last_actions is None:
-            last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
-
-        first_call_b = jnp.asarray(first_call, dtype=bool)
-        time0 = jnp.where(first_call_b, jnp.array(1.0, jnp.float32), jnp.array(rti_t0, jnp.float32))
-        steps0 = jnp.where(
-            first_call_b,
-            jnp.array(num_steps, jnp.float32),
-            jnp.array(rti_steps, jnp.float32),
-        )
-        dt = -(time0 - 0.0) / steps0
-        x_init = jnp.where(first_call_b, noise, last_actions)
-
-        def step_noguide(carry):
-            x_t, time, is_first = carry
-            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
-            )
-            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
-            # other
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
-            # prefix tokens
-            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
-            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
-            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
-            assert full_attn_mask.shape == (
-                batch_size,
-                suffix_tokens.shape[1],
-                prefix_tokens.shape[1] + suffix_tokens.shape[1],
-            )
-            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
-            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
-            )
-            assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
-            return x_t + dt * v_t, time + dt, False
-
-        def step_guided(carry):
-            x_t, time, is_first = carry
-                    
-            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
-            )
-            
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_attn_mask_ = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            full_attn_mask = jnp.concatenate([prefix_attn_mask_, suffix_attn_mask], axis=-1)
-            positions_ = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens], mask=full_attn_mask, positions=positions_, kv_cache=kv_cache
-            )
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
-            return x_t + dt * v_t, time + dt, False
-
-        def step(carry):
-            return jax.lax.cond(
-                carry[2],
-                step_noguide,
-                step_guided,
-                carry
-            )
-
-        def cond(carry):
-            x_t, time, is_first = carry
-            # robust to floating-point error
-            return time >= -dt / 2
-
-        x_0, _, first_call_new = jax.lax.while_loop(cond, step, (x_init, time0, first_call_b))
-
-        # 裁剪 + 复制尾部填充
-        def clip_and_pad(x):
-            cut = x[:, delay_length:, :]
-            tail = x[:, -1:, :]
-            tail_rep = jnp.repeat(tail, repeats=delay_length, axis=1)
-            return jnp.concatenate([cut, tail_rep], axis=1) 
-
-        last_actions_new = clip_and_pad(x_0)
-
-        return x_0, first_call_new, last_actions_new, count
-    
-    def rtc_sample_actions(
+    def rtc_new_obs_sample_actions_1(
         self,
         rng: at.KeyArrayLike,
         observation: _model.Observation,
@@ -453,14 +338,14 @@ class Pi0(_model.BaseModel):
         num_steps: int | at.Int[at.Array, ""] = 10,
         guide_beta: float = 2.0,
     ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        delay_length = 26
+        infer_delay_length = 7
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
         noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-        rtc_mask = make_rtc_mask((batch_size, self.action_horizon, self.action_dim), total=delay_length)
+        rtc_mask = make_rtc_mask((batch_size, self.action_horizon, self.action_dim), total=infer_delay_length)
         # flatten 保存结构模板
         flat_obs, tree_def = jax.tree_util.tree_flatten(observation)
         shape_dtype_structs = tuple(jax.ShapeDtypeStruct(arr.shape, arr.dtype) for arr in flat_obs)
@@ -475,11 +360,10 @@ class Pi0(_model.BaseModel):
             last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
 
         while rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] is None:
-            # print(f"4.[标记] 线程:{threading.current_thread().name} | self id={id(self)}, id(RTC_STORE)={id(rtc_store.RTC_STORE)}")
-            time.sleep(0.001)
+            pass
 
         def step_noguide(carry):
-            x_t, time, is_first, has_update1, has_update2, last_actions = carry
+            x_t, time, first_call = carry
             suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
@@ -505,16 +389,13 @@ class Pi0(_model.BaseModel):
             )
             assert prefix_out is None
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-            x_e = x_t + dt * v_t
-            last_actions = x_e
 
-            return x_e, time + dt, False, has_update1, has_update2, last_actions
+            return x_t + dt * v_t, time + dt, first_call
 
         def step_guided(carry):
-            x_t, time, is_first, has_update1, has_update2, last_actions = carry
+            x_t, time, first_call = carry
 
             def get_obs(_):
-                # print(f"3.[标记] 线程:{threading.current_thread().name} | self id={id(self)}, id(RTC_STORE)={id(rtc_store.RTC_STORE)}")
                 with rtc_store.RTC_STORE_LOCK:
                     new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
                 new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
@@ -522,187 +403,13 @@ class Pi0(_model.BaseModel):
                 # 确认和模板一致
                 # for i, (tpl, val) in enumerate(zip(flat_obs, flat_new_obs)):
                 #     print(f"[{i}] 模板: dtype={tpl.dtype} shape={tpl.shape} 真实: dtype={val.dtype} shape={val.shape}")
-
                 return tuple(flat_new_obs)
 
             flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
             new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
 
-            # def update1_branch(carry):
-            #     x_t, time, is_first, last_used_obs, has_update1, has_update2 = carry
-            #     def get_obs(_):
-            #         with rtc_store.RTC_STORE_LOCK:
-            #             new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
-            #         new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
-            #         flat_new_obs, _ = jax.tree_util.tree_flatten(new_obs_struct)
-            #         return tuple(flat_new_obs)
-            #     flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
-            #     new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
-            #     return x_t, time, is_first, new_obs, jnp.array(True), has_update2
-            # def update2_branch(carry):
-            #     x_t, time, is_first, last_used_obs, has_update1, has_update2 = carry
-            #     def get_obs(_):
-            #         with rtc_store.RTC_STORE_LOCK:
-            #             new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
-            #         new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
-            #         flat_new_obs, _ = jax.tree_util.tree_flatten(new_obs_struct)
-            #         return tuple(flat_new_obs)
-            #     flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
-            #     new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
-            #     return x_t, time, is_first, new_obs, has_update1, jnp.array(True)
-            # def do_nothing_branch(carry):
-            #     return carry
-            # # 第一次更新
-            # carry = jax.lax.cond(
-            #     (time < 2 / 3) & (~has_update1),
-            #     update1_branch,
-            #     do_nothing_branch,
-            #     carry
-            # )
-            # x_t, time, is_first, last_used_obs, has_update1, has_update2 = carry
-            # # 第二次更新
-            # carry = jax.lax.cond(
-            #     (time < 1 / 3) & (~has_update2),
-            #     update2_branch,
-            #     do_nothing_branch,
-            #     carry
-            # )
-            # x_t, time, is_first, last_used_obs, has_update1, has_update2 = carry
-            # new_obs = last_used_obs
-
-            # 用 new_obs 重建 prefix 与 kv_cache
-            prefix_tokens_new, prefix_mask_new, prefix_ar_mask_new = self.embed_prefix(new_obs)
-            prefix_attn_mask_new = make_attn_mask(prefix_mask_new, prefix_ar_mask_new)
-            positions_prefix_new = jnp.cumsum(prefix_mask_new, axis=1) - 1
-            _, kv_cache_new = self.PaliGemma.llm(
-                [prefix_tokens_new, None],
-                mask=prefix_attn_mask_new,
-                positions=positions_prefix_new
-            )
-
             suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
                 new_obs, x_t, jnp.broadcast_to(time, batch_size)
-            )
-            
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_attn_mask_ = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            full_attn_mask = jnp.concatenate([prefix_attn_mask_, suffix_attn_mask], axis=-1)
-            positions_ = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens], mask=full_attn_mask, positions=positions_, kv_cache=kv_cache_new  # 有了 kv_cache a重进就改成 kv_cache_new
-            )
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
-            tau = time
-            r2 = ((1.0 - tau) ** 2) / (tau ** 2 + (1.0 - tau) ** 2 + 1e-8)
-            weight = jnp.minimum(guide_beta, ((1.0 - tau) / (tau + 1e-8)) * r2)
-            # weight = guide_beta * tau   # 越往后越重视obs
-            A_hat = x_t + (1.0 - tau) * v_t
-            def loss(x):
-                return jnp.sum(rtc_mask * (A_hat - last_actions) ** 2) / (jnp.sum(rtc_mask) + 1e-8)
-            g = jax.grad(loss)(x_t)
-            v_t = v_t - weight * g
-            x_e = x_t + dt * v_t
-
-            def clip_and_pad(x):
-                cut = x[:, delay_length:, :]
-                zeros = jnp.zeros((cut.shape[0], delay_length, cut.shape[2]), dtype=cut.dtype)
-                return jnp.concatenate([cut, zeros], axis=1)
-            last_actions = clip_and_pad(x_e)
-
-            return x_e, time + dt, False, has_update1, has_update2, last_actions
-
-        def step(carry):
-            return jax.lax.cond(
-                carry[2],
-                step_noguide,
-                step_guided,
-                carry
-            )
-
-        def cond(carry):
-            x_t, time, is_first, has_update1, has_update2, last_actions = carry
-            # robust to floating-point error
-            return time >= -dt / 2
-
-        x_0, _, first_call_new, _, _, last_actions_new = jax.lax.while_loop(cond, step, (noise, 1.0, first_call, False, False, last_actions))
-
-        # # 裁剪+补零
-        # def clip_and_pad(x):
-        #     cut = x[:, delay_length:, :]
-        #     zeros = jnp.zeros((cut.shape[0], delay_length, cut.shape[2]), dtype=cut.dtype)
-        #     return jnp.concatenate([cut, zeros], axis=1)
-
-        # last_actions_new = clip_and_pad(x_0)
-
-        return x_0, first_call_new, last_actions_new, count
-    
-    def rtc_only_actions(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        first_call: bool,
-        last_actions: jax.Array,
-        count: int,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        guide_beta: float = 2.0,
-    ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        total_delay_length = 4
-        infer_delay_length = 4
-        observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        dt = -1.0 / num_steps
-        batch_size = observation.state.shape[0]
-        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-        rtc_mask = make_rtc_mask((batch_size, self.action_horizon, self.action_dim), total=infer_delay_length, ones_steps=infer_delay_length)
-
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
-
-        if last_actions is None:
-            last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
-
-        def step_noguide(carry):
-            x_t, time, is_first = carry
-            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
-            )
-            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
-            # other
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
-            # prefix tokens
-            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
-            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
-            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
-            assert full_attn_mask.shape == (
-                batch_size,
-                suffix_tokens.shape[1],
-                prefix_tokens.shape[1] + suffix_tokens.shape[1],
-            )
-            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
-            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
-            )
-            assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
-            return x_t + dt * v_t, time + dt, False
-
-        def step_guided(carry):
-            x_t, time, is_first = carry
-                    
-            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
             )
             
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
@@ -718,14 +425,13 @@ class Pi0(_model.BaseModel):
             tau = time
             r2 = ((1.0 - tau) ** 2) / (tau ** 2 + (1.0 - tau) ** 2 + 1e-8)
             weight = jnp.minimum(guide_beta, ((1.0 - tau) / (tau + 1e-8)) * r2)
-            # weight = guide_beta * tau   # 越往后越重视obs
             A_hat = x_t + (1.0 - tau) * v_t
             def loss(x):
                 return jnp.sum(rtc_mask * (A_hat - last_actions) ** 2) / (jnp.sum(rtc_mask) + 1e-8)
             g = jax.grad(loss)(x_t)
             v_t = v_t - weight * g
 
-            return x_t + dt * v_t, time + dt, False
+            return x_t + dt * v_t, time + dt, first_call
 
         def step(carry):
             return jax.lax.cond(
@@ -736,23 +442,367 @@ class Pi0(_model.BaseModel):
             )
 
         def cond(carry):
-            x_t, time, is_first = carry
+            x_t, time, first_call= carry
             # robust to floating-point error
             return time >= -dt / 2
 
-        x_0, _, first_call_new = jax.lax.while_loop(cond, step, (noise, 1.0, first_call))
+        x_0, _, first_call = jax.lax.while_loop(cond, step, (noise, 1.0, first_call))
 
-        # 裁剪+补零
-        def clip_and_pad(x):
-            cut = x[:, total_delay_length:, :]
-            zeros = jnp.zeros((cut.shape[0], total_delay_length, cut.shape[2]), dtype=cut.dtype)
-            return jnp.concatenate([cut, zeros], axis=1)
+        def no_change(carry):
+            first_call, last_actions = carry
+            return False, last_actions
 
-        last_actions_new = clip_and_pad(x_0)
+        def modify(carry):
+            first_call, last_actions = carry
+            def clip_and_pad(x):
+                cut = x[:, infer_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], infer_delay_length, cut.shape[2]), dtype=cut.dtype)
+                return jnp.concatenate([cut, zeros], axis=1)
+            return first_call, clip_and_pad(last_actions)
+
+        first_call_new, last_actions_new = jax.lax.cond(first_call, no_change, modify, (first_call, x_0))
+
+        return x_0, first_call_new, last_actions_new, count
+    
+    def rtc_new_obs_sample_actions_2(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        first_call: bool,
+        last_actions: jax.Array,
+        count: int,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        guide_beta: float = 2.0,
+    ) -> tuple[_model.Actions, bool, jax.Array, int]:
+        infer_delay_length = 26
+        self.action_horizon = 60  # horizon 50 不够用
+        observation = _model.preprocess_observation(None, observation, train=False)
+        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
+        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        rtc_mask = make_rtc_mask((batch_size, self.action_horizon, self.action_dim), total=infer_delay_length)
+        # flatten 保存结构模板
+        flat_obs, tree_def = jax.tree_util.tree_flatten(observation)
+        shape_dtype_structs = tuple(jax.ShapeDtypeStruct(arr.shape, arr.dtype) for arr in flat_obs)
+
+        # first fill KV cache with a forward pass of the prefix
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        if last_actions is None:
+            last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
+
+        while rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] is None:
+            pass
+
+        def step_noguide(carry):
+            x_t, time, first_call = carry
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
+            # other
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
+            # prefix tokens
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
+            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            assert full_attn_mask.shape == (
+                batch_size,
+                suffix_tokens.shape[1],
+                prefix_tokens.shape[1] + suffix_tokens.shape[1],
+            )
+            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
+            )
+            assert prefix_out is None
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            return x_t + dt * v_t, time + dt, first_call
+
+        def step_guided(carry):
+            x_t, time, first_call = carry
+
+            def get_obs(_):
+                with rtc_store.RTC_STORE_LOCK:
+                    new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
+                new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
+                flat_new_obs, _ = jax.tree_util.tree_flatten(new_obs_struct)
+                # 确认和模板一致
+                # for i, (tpl, val) in enumerate(zip(flat_obs, flat_new_obs)):
+                #     print(f"[{i}] 模板: dtype={tpl.dtype} shape={tpl.shape} 真实: dtype={val.dtype} shape={val.shape}")
+                return tuple(flat_new_obs)
+
+            flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
+            new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
+
+            # 用 new_obs 重建 prefix 与 kv_cache
+            prefix_tokens_new, prefix_mask_new, prefix_ar_mask_new = self.embed_prefix(new_obs)
+            prefix_attn_mask_new = make_attn_mask(prefix_mask_new, prefix_ar_mask_new)
+            positions_prefix_new = jnp.cumsum(prefix_mask_new, axis=1) - 1
+            _, kv_cache_new = self.PaliGemma.llm(
+                [prefix_tokens_new, None],
+                mask=prefix_attn_mask_new,
+                positions=positions_prefix_new
+            )
+
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
+                new_obs, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask_ = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask_, suffix_attn_mask], axis=-1)
+            positions_ = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions_, kv_cache=kv_cache_new  # 有了 kv_cache 重建就改成 kv_cache_new
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            tau = time
+            r2 = ((1.0 - tau) ** 2) / (tau ** 2 + (1.0 - tau) ** 2 + 1e-8)
+            weight = jnp.minimum(guide_beta, ((1.0 - tau) / (tau + 1e-8)) * r2)
+            A_hat = x_t + (1.0 - tau) * v_t
+            def loss(x):
+                return jnp.sum(rtc_mask * (A_hat - last_actions) ** 2) / (jnp.sum(rtc_mask) + 1e-8)
+            g = jax.grad(loss)(x_t)
+            v_t = v_t - weight * g
+            
+            return x_t + dt * v_t, time + dt, first_call
+
+        def step(carry):
+            return jax.lax.cond(
+                carry[2],
+                step_noguide,
+                step_guided,
+                carry
+            )
+
+        def cond(carry):
+            x_t, time, first_call = carry
+            return time >= -dt / 2
+
+        x_0, _, first_call = jax.lax.while_loop(cond, step, (noise, 1.0, first_call))
+
+        def no_change(carry):
+            first_call, last_actions = carry
+            return False, last_actions
+
+        def modify(carry):
+            first_call, last_actions = carry
+            def clip_and_pad(x):
+                cut = x[:, infer_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], infer_delay_length, cut.shape[2]), dtype=cut.dtype)
+                return jnp.concatenate([cut, zeros], axis=1)
+            return first_call, clip_and_pad(last_actions)
+
+        first_call_new, last_actions_new = jax.lax.cond(first_call, no_change, modify, (first_call, x_0))
+
+        return x_0, first_call_new, last_actions_new, count
+    
+    def rtc_new_obs_sample_actions_3(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        first_call: bool,
+        last_actions: jax.Array,
+        count: int,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        guide_beta: float = 2.0,
+    ) -> tuple[_model.Actions, bool, jax.Array, int]:
+        infer_delay_length = 14
+        observation = _model.preprocess_observation(None, observation, train=False)
+        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
+        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        rtc_mask = make_rtc_mask((batch_size, self.action_horizon, self.action_dim), total=infer_delay_length)
+        # flatten 保存结构模板
+        flat_obs, tree_def = jax.tree_util.tree_flatten(observation)
+        shape_dtype_structs = tuple(jax.ShapeDtypeStruct(arr.shape, arr.dtype) for arr in flat_obs)
+
+        # first fill KV cache with a forward pass of the prefix
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        if last_actions is None:
+            last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
+
+        while rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] is None:
+            pass
+
+        def step_noguide(carry):
+            x_t, time, first_call, observation, has_update1, has_update2, kv_cache = carry
+
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
+            # other
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
+            # prefix tokens
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
+            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            assert full_attn_mask.shape == (
+                batch_size,
+                suffix_tokens.shape[1],
+                prefix_tokens.shape[1] + suffix_tokens.shape[1],
+            )
+            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
+            )
+            assert prefix_out is None
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            return x_t + dt * v_t, time + dt, first_call, observation, has_update1, has_update2, kv_cache
+
+        def step_guided(carry):
+            x_t, time, first_call, observation, has_update1, has_update2, kv_cache = carry
+
+            def update1_branch(carry):
+                x_t, time, first_call, last_used_obs, has_update1, has_update2, kv_cache = carry
+                def get_obs(_):
+                    with rtc_store.RTC_STORE_LOCK:
+                        new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
+                    new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
+                    flat_new_obs, _ = jax.tree_util.tree_flatten(new_obs_struct)
+                    return tuple(flat_new_obs)
+                flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
+                new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
+
+                # 用 new_obs 重建 prefix 与 kv_cache
+                prefix_tokens_new, prefix_mask_new, prefix_ar_mask_new = self.embed_prefix(new_obs)
+                prefix_attn_mask_new = make_attn_mask(prefix_mask_new, prefix_ar_mask_new)
+                positions_prefix_new = jnp.cumsum(prefix_mask_new, axis=1) - 1
+                _, kv_cache_new = self.PaliGemma.llm(
+                    [prefix_tokens_new, None],
+                    mask=prefix_attn_mask_new,
+                    positions=positions_prefix_new
+                )
+
+                return x_t, time, first_call, new_obs, jnp.array(True), has_update2, kv_cache_new
+            
+            def update2_branch(carry):
+                x_t, time, first_call, last_used_obs, has_update1, has_update2, kv_cache= carry
+                def get_obs(_):
+                    with rtc_store.RTC_STORE_LOCK:
+                        new_obs_struct = rtc_store.RTC_STORE.get(rtc_store.GLOBAL_KEY, None)
+                    new_obs_struct = _model.preprocess_observation(None, new_obs_struct, train=False)
+                    flat_new_obs, _ = jax.tree_util.tree_flatten(new_obs_struct)
+                    return tuple(flat_new_obs)
+                flat_new_obs = io_callback(get_obs, shape_dtype_structs, None)
+                new_obs = jax.tree_util.tree_unflatten(tree_def, flat_new_obs)
+
+                # 用 new_obs 重建 prefix 与 kv_cache
+                prefix_tokens_new, prefix_mask_new, prefix_ar_mask_new = self.embed_prefix(new_obs)
+                prefix_attn_mask_new = make_attn_mask(prefix_mask_new, prefix_ar_mask_new)
+                positions_prefix_new = jnp.cumsum(prefix_mask_new, axis=1) - 1
+                _, kv_cache_new = self.PaliGemma.llm(
+                    [prefix_tokens_new, None],
+                    mask=prefix_attn_mask_new,
+                    positions=positions_prefix_new
+                )
+
+                return x_t, time, first_call, new_obs, has_update1, jnp.array(True), kv_cache_new
+            
+            def do_nothing_branch(carry):
+                return carry
+            
+            # 第一次更新
+            carry = jax.lax.cond(
+                (time < 2 / 3) & (~has_update1),
+                update1_branch,
+                do_nothing_branch,
+                carry
+            )
+            x_t, time, first_call, new_obs, has_update1, has_update2, kv_cache_new = carry
+
+            # 第二次更新
+            carry = jax.lax.cond(
+                (time < 1 / 3) & (~has_update2),
+                update2_branch,
+                do_nothing_branch,
+                carry
+            )
+            x_t, time, first_call, new_obs, has_update1, has_update2, kv_cache_new = carry
+
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
+                new_obs, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask_ = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask_, suffix_attn_mask], axis=-1)
+            positions_ = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions_, kv_cache=kv_cache_new  # 有了 kv_cache 重建就改成 kv_cache_new
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            tau = time
+            r2 = ((1.0 - tau) ** 2) / (tau ** 2 + (1.0 - tau) ** 2 + 1e-8)
+            weight = jnp.minimum(guide_beta, ((1.0 - tau) / (tau + 1e-8)) * r2)
+            A_hat = x_t + (1.0 - tau) * v_t
+            def loss(x):
+                return jnp.sum(rtc_mask * (A_hat - last_actions) ** 2) / (jnp.sum(rtc_mask) + 1e-8)
+            g = jax.grad(loss)(x_t)
+            v_t = v_t - weight * g
+
+            return x_t + dt * v_t, time + dt, first_call, new_obs, has_update1, has_update2, kv_cache_new
+
+        def step(carry):
+            return jax.lax.cond(
+                carry[2],
+                step_noguide,
+                step_guided,
+                carry
+            )
+
+        def cond(carry):
+            x_t, time, first_call, observation, has_update1, has_update2, kv_cache = carry
+            # robust to floating-point error
+            return time >= -dt / 2
+
+        x_0, _, first_call, _, _, _, _ = jax.lax.while_loop(cond, step, (noise, 1.0, first_call, observation, False, False, kv_cache))
+
+        def no_change(carry):
+            first_call, last_actions = carry
+            return False, last_actions
+
+        def modify(carry):
+            first_call, last_actions = carry
+            def clip_and_pad(x):
+                cut = x[:, infer_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], infer_delay_length, cut.shape[2]), dtype=cut.dtype)
+                return jnp.concatenate([cut, zeros], axis=1)
+            return first_call, clip_and_pad(last_actions)
+
+        first_call_new, last_actions_new = jax.lax.cond(first_call, no_change, modify, (first_call, x_0))
 
         return x_0, first_call_new, last_actions_new, count
 
-def make_rtc_mask(shape, total=3, ones_steps=3, decay_steps=3):
+def make_rtc_mask(shape, total=3, ones_steps=3, decay_steps=5):
     # shape: (b, h, d)
     b, h, d = shape
     zeros1 = jnp.zeros(total - ones_steps)  # 前面的0
