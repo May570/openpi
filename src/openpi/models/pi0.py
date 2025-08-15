@@ -335,7 +335,6 @@ class Pi0(_model.BaseModel):
         num_steps: int | at.Int[at.Array, ""] = 10,
         guide_beta: float = 2.0,
     ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        total_delay_length = 4
         infer_delay_length = 4
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -355,7 +354,7 @@ class Pi0(_model.BaseModel):
             last_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim))
 
         def step_noguide(carry):
-            x_t, time, first_call, last_actions = carry
+            x_t, time, first_call = carry
             suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
@@ -382,13 +381,10 @@ class Pi0(_model.BaseModel):
             assert prefix_out is None
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-            x_e = x_t + dt * v_t
-            last_actions = x_e
-
-            return x_e, time + dt, first_call, last_actions
+            return x_t + dt * v_t, time + dt, first_call
 
         def step_guided(carry):
-            x_t, time, first_call, last_actions = carry
+            x_t, time, first_call = carry
                     
             suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
@@ -413,14 +409,7 @@ class Pi0(_model.BaseModel):
             g = jax.grad(loss)(x_t)
             v_t = v_t - weight * g
 
-            x_e = x_t + dt * v_t
-            def clip_and_pad(x):
-                cut = x[:, total_delay_length:, :]
-                zeros = jnp.zeros((cut.shape[0], total_delay_length, cut.shape[2]), dtype=cut.dtype)
-                return jnp.concatenate([cut, zeros], axis=1)
-            last_actions = clip_and_pad(x_e)
-
-            return x_e, time + dt, first_call, last_actions
+            return x_t + dt * v_t, time + dt, first_call
 
         def step(carry):
             return jax.lax.cond(
@@ -431,11 +420,11 @@ class Pi0(_model.BaseModel):
             )
 
         def cond(carry):
-            x_t, time, first_call, last_actions = carry
+            x_t, time, first_call = carry
             # robust to floating-point error
             return time >= -dt / 2
 
-        x_0, _, first_call, last_actions = jax.lax.while_loop(cond, step, (noise, 1.0, first_call, last_actions))
+        x_0, _, first_call = jax.lax.while_loop(cond, step, (noise, 1.0, first_call))
 
         def no_change(carry):
             first_call, last_actions = carry
@@ -444,16 +433,16 @@ class Pi0(_model.BaseModel):
         def modify(carry):
             first_call, last_actions = carry
             def clip_and_pad(x):
-                cut = x[:, total_delay_length:, :]
-                zeros = jnp.zeros((cut.shape[0], total_delay_length, cut.shape[2]), dtype=cut.dtype)
+                cut = x[:, infer_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], infer_delay_length, cut.shape[2]), dtype=cut.dtype)
                 return jnp.concatenate([cut, zeros], axis=1)
             return first_call, clip_and_pad(last_actions)
 
-        first_call_new, last_actions_new = jax.lax.cond(first_call, no_change, modify, (first_call, last_actions))
+        first_call_new, last_actions_new = jax.lax.cond(first_call, no_change, modify, (first_call, x_0))
 
         return x_0, first_call_new, last_actions_new, count
 
-def make_rtc_mask(shape, total=3, ones_steps=3, decay_steps=5):
+def make_rtc_mask(shape, total=3, ones_steps=3, decay_steps=2):
     # shape: (b, h, d)
     b, h, d = shape
     zeros1 = jnp.zeros(total - ones_steps)  # 前面的0
