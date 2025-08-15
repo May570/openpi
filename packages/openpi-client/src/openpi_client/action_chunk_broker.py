@@ -6,6 +6,9 @@ from typing_extensions import override
 
 from openpi_client import base_policy as _base_policy
 
+import threading
+import time
+
 
 class ActionChunkBroker(_base_policy.BasePolicy):
     """Wraps a policy to return action chunks one-at-a-time.
@@ -16,30 +19,119 @@ class ActionChunkBroker(_base_policy.BasePolicy):
     list of chunks is exhausted.
     """
 
-    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int):
+    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, use_rtc: bool = False):
         self._policy = policy
         self._action_horizon = action_horizon
         self._cur_step: int = 0
 
         self._last_results: Dict[str, np.ndarray] | None = None
 
+        self._use_rtc = use_rtc
+        self._last_obs = None
+        self._buffer: Dict[str, np.ndarray] | None = None
+        self._rtc_current_step: int = 0
+        self._stop_event = None
+        self._thread = None
+        self._is_first = True
+        self._old_act_step = 0
+        self._action_count_end = 0
+
+    def _start_infer_thread(self):
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run_infer_loop)
+        self._thread.start()
+
+    def _run_infer_loop(self):
+        while not self._stop_event.is_set():
+            if self._last_obs is not None:
+                # print(f"-Running inference for action chunk broker with last observation--")
+                # old_buffer = self._buffer
+                # print(f"2.[标记] 线程:{threading.current_thread().name} | ActionChunkBroker id={id(self)}, policy id={id(self._policy)}, model id={id(self._policy._model)}")
+                # self._action_count_end = 0
+                self._buffer = self._policy.infer(self._last_obs)
+                # time.sleep(0.5)
+                # print(f"---------Finished inference for action chunk broker--------")
+                if self._is_first:
+                    self._rtc_current_step = 0
+                    self._is_first = False
+                else:
+                    # blend_steps = 2
+                    # if (old_buffer is not None and 
+                    # hasattr(self, "_old_act_step") and 
+                    # self._old_act_step >= 4 + blend_steps):
+                    #     old_actions = old_buffer["actions"][self._old_act_step - blend_steps + 1:self._old_act_step + 1]
+                    #     new_actions = self._buffer["actions"][4:4 + blend_steps]
+                    #     w = np.array([[0.75], [0.25]])
+                    #     blended = w * old_actions + (1 - w) * new_actions
+                    #     self._buffer["actions"][4 : 4 + blend_steps] = blended
+
+                    # print(f"action count end: {self._action_count_end}")
+                    # self._rtc_current_step = self._action_count_end - 1
+                    # print(f"RTC current step: {self._rtc_current_step}")
+
+                    self._rtc_current_step = 3
+                # self._rtc_current_step = 0
+                time.sleep(0.5)  # Sleep to avoid busy waiting
+
+    def close(self):
+        # print(f"---------Closing ActionChunkBroker--------")
+        if self._thread is not None and self._thread.is_alive():
+            self._stop_event.set()
+            self._thread.join()
+        self._thread = None
+        self._stop_event = None
+        self._buffer = None
+
     @override
     def infer(self, obs: Dict) -> Dict:  # noqa: UP006
-        if self._last_results is None:
-            self._last_results = self._policy.infer(obs)
-            self._cur_step = 0
+        self._last_obs = obs
 
-        def slicer(x):
-            if isinstance(x, np.ndarray):
-                return x[self._cur_step, ...]
-            else:
-                return x
+        if self._use_rtc:
+            if self._thread is None or not self._thread.is_alive():
+                self._start_infer_thread()
+                
+            # if self._rtc_current_step >= self._action_horizon:
+            #     self._buffer = None
 
-        results = tree.map_structure(slicer, self._last_results)
-        self._cur_step += 1
+            # if not self._is_first:
+            # print(f"1.[标记] 线程:{threading.current_thread().name} | ActionChunkBroker id={id(self)}, policy id={id(self._policy)}, model id={id(self._policy._model)}")
+            # self._policy.update_obs(self._last_obs)
 
-        if self._cur_step >= self._action_horizon:
-            self._last_results = None
+            while self._buffer is None or self._rtc_current_step >= self._buffer["actions"].shape[0]:
+                # length = self._buffer["actions"].shape[0] if self._buffer is not None else 0
+                # print(f"rtc_current_step: {self._rtc_current_step}, buffer: {length}")
+                # print(f"Waiting for RTC buffer to be ready...")
+                # time.sleep(0.01)
+                pass
+
+            def slicer(x):
+                if isinstance(x, np.ndarray):
+                    return x[self._rtc_current_step, ...]
+                else:
+                    return x
+            results = tree.map_structure(slicer, self._buffer)
+
+            # print(f"RTC current step: {self._rtc_current_step}")
+            # self._old_act_step = self._rtc_current_step
+            self._rtc_current_step += 1
+            # self._action_count_end += 1
+
+        else:
+            if self._last_results is None:
+                self._last_results = self._policy.infer(obs)
+                self._cur_step = 0
+
+            def slicer(x):
+                if isinstance(x, np.ndarray):
+                    return x[self._cur_step, ...]
+                else:
+                    return x
+
+            results = tree.map_structure(slicer, self._last_results)
+            self._cur_step += 1
+
+            if self._cur_step >= self._action_horizon:
+                self._last_results = None
 
         return results
 
@@ -48,3 +140,5 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._policy.reset()
         self._last_results = None
         self._cur_step = 0
+        self._last_obs = None
+        self._rtc_current_step = 0

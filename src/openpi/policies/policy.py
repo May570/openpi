@@ -16,6 +16,7 @@ from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+import openpi.shared.rtc_store as rtc_store
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
@@ -31,12 +32,18 @@ class Policy(BasePolicy):
         sample_kwargs: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ):
-        self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+        # self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._rng = rng or jax.random.key(0)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
+        self.first_call = True
+        self.last_actions = None
+        # self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)
+        self._rtc_only_actions = nnx_utils.module_jit(model.rtc_only_actions)
+        # self._rit_actions = nnx_utils.module_jit(model.rit_actions)
+        self.debug_counter = 0
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -48,10 +55,25 @@ class Policy(BasePolicy):
 
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
+
+        # print(f"first_call: {self.first_call}")
+        # print(f"6.[标记] 线程:{threading.current_thread().name} | model id={id(self._model)}")
+        actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_only_actions(
+            sample_rng,
+            _model.Observation.from_dict(inputs),
+            self.first_call,
+            self.last_actions,
+            self.debug_counter,
+            **self._sample_kwargs
+        )
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            "actions": actions,
         }
+        # outputs = {
+        #     "state": inputs["state"],
+        #     "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+        # }
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
         model_time = time.monotonic() - start_time
@@ -65,6 +87,23 @@ class Policy(BasePolicy):
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata
+    
+    @override
+    def reset(self) -> None:
+        """Reset the policy to its initial state."""
+        self.first_call = True
+        self.last_actions = None
+        self.debug_counter = 0
+        # rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = None
+
+    def update_obs(self, new_obs: dict) -> None:
+        inputs = jax.tree.map(lambda x: x, new_obs)
+        inputs = self._input_transform(inputs)
+        # Make a batch and convert to jax.Array.
+        inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+        # print(f"5.[标记] 线程:{threading.current_thread().name} | model id={id(self._model)}, id(RTC_STORE)={id(rtc_store.RTC_STORE)}")
+        with rtc_store.RTC_STORE_LOCK:
+            rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = _model.Observation.from_dict(inputs)
 
 
 class PolicyRecorder(_base_policy.BasePolicy):

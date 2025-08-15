@@ -16,3 +16,7 @@ class PolicyAgent(_agent.Agent):
 
     def reset(self) -> None:
         self._policy.reset()
+
+    def close(self) -> None:
+        """Close the agent and release any resources."""
+        self._policy.close()

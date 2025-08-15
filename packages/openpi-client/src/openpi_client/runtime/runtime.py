@@ -6,6 +6,18 @@ from openpi_client.runtime import agent as _agent
 from openpi_client.runtime import environment as _environment
 from openpi_client.runtime import subscriber as _subscriber
 
+import sys
+
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(levelname)s %(asctime)s %(message)s",
+    datefmt="%H:%M:%S"
+)
+
 
 class Runtime:
     """The core module orchestrating interactions between key components of the system."""
@@ -18,6 +30,7 @@ class Runtime:
         max_hz: float = 0,
         num_episodes: int = 1,
         max_episode_steps: int = 0,
+        use_rtc: bool = False,
     ) -> None:
         self._environment = environment
         self._agent = agent
@@ -28,6 +41,10 @@ class Runtime:
 
         self._in_episode = False
         self._episode_steps = 0
+        self._steps_list = []
+        self._episode_durations = []
+        self._episode_successes = []
+        self._use_rtc = use_rtc
 
     def run(self) -> None:
         """Runs the runtime loop continuously until stop() is called or the environment is done."""
@@ -36,6 +53,25 @@ class Runtime:
 
         # Final reset, this is important for real environments to move the robot to its home position.
         self._environment.reset()
+
+        # 排除 episode 1，单独打印
+        for idx, duration in enumerate(self._episode_durations):
+            steps = self._steps_list[idx]
+            if idx == 0:
+                logging.info(f"Episode {idx + 1}: duration = {duration:.2f} s, steps = {steps}, {self._episode_successes[idx]} (warmup, excluded from average)")
+                continue
+            hz = steps / duration if duration > 0 else 0
+            logging.info(f"Episode {idx + 1}: duration = {duration:.2f} s, steps = {steps}, {self._episode_successes[idx]}, approx {hz:.2f} Hz")
+
+        # 平均统计不含 warmup
+        durations = self._episode_durations[1:]
+        steps_list = self._steps_list[1:]
+        if durations:
+            avg_duration = sum(durations) / len(durations)
+            avg_steps = sum(steps_list) / len(steps_list)
+            avg_hz = avg_steps / avg_duration
+            logging.info(f"[Summary] (Excluding warmup) Average duration: {avg_duration:.2f} s, Average frequency: {avg_hz:.2f} Hz")
+
 
     def run_in_new_thread(self) -> threading.Thread:
         """Runs the runtime loop in a new thread."""
@@ -50,6 +86,8 @@ class Runtime:
     def _run_episode(self) -> None:
         """Runs a single episode."""
         logging.info("Starting episode...")
+        start_time = time.time()
+
         self._environment.reset()
         self._agent.reset()
         for subscriber in self._subscribers:
@@ -72,8 +110,21 @@ class Runtime:
                 last_step_time = time.time()
             else:
                 last_step_time = now
+        if self._use_rtc:
+            self._agent.close()
 
-        logging.info("Episode completed.")
+        duration = time.time() - start_time
+        self._episode_durations.append(duration)
+        self._steps_list.append(self._episode_steps)
+
+        info = self._environment.get_info()
+        # logging.info(f"info: {info}")
+        success = info.get("is_success", False)
+        self._episode_successes.append(success)
+        status = "SUCCESS ✅" if success else "FAIL ❌"
+        logging.info(f"Episode {len(self._episode_successes)} result: {status}")
+
+        logging.info(f"Episode completed in {duration:.2f} seconds.")
         for subscriber in self._subscribers:
             subscriber.on_episode_end()
 
@@ -81,7 +132,27 @@ class Runtime:
         """A single step of the runtime loop."""
         observation = self._environment.get_observation()
         action = self._agent.get_action(observation)
+        # print(list(action.keys()))
+        # print(f"-----------------------get_action 1----------------------------")
+        # for k, v in action.items():
+        #     if hasattr(v, 'shape'):
+        #         print(f"{k}: shape={v.shape}, dtype={v.dtype}")
+        #     elif isinstance(v, dict):
+        #         print(f"{k}: dict")
+        #         for k2, v2 in v.items():
+        #             if hasattr(v2, 'shape'):
+        #                 print(f"  {k2}: shape={v2.shape}, dtype={v2.dtype}")
+        #             else:
+        #                 print(f"  {k2}: {type(v2).__name__}")
+        #     elif isinstance(v, list):
+        #         print(f"{k}: list, len={len(v)}")
+        #         if v and hasattr(v[0], 'shape'):
+        #             print(f"  first elem shape={v[0].shape}, dtype={v[0].dtype}")
+        #     else:
+        #         print(f"{k}: {type(v).__name__}")
+        # print(f"-----------------------get_action 2----------------------------")
         self._environment.apply_action(action)
+        # print(f"-----------------------apply_action----------------------------")
 
         for subscriber in self._subscribers:
             subscriber.on_step(observation, action)

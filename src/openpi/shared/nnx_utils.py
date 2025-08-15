@@ -38,6 +38,7 @@ def module_jit(meth: Callable[P, R], *jit_args, **jit_kwargs) -> Callable[P, R]:
 
     @functools.wraps(meth)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        # print("module_jit wrapper args:", [(i, type(a), getattr(a, 'shape', None)) for i, a in enumerate(args)])
         return jitted_fn(state, *args, **kwargs)
 
     return wrapper

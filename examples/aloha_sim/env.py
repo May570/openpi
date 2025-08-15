@@ -18,6 +18,7 @@ class AlohaSimEnvironment(_environment.Environment):
         self._last_obs = None
         self._done = True
         self._episode_reward = 0.0
+        self._info = {}
 
     @override
     def reset(self) -> None:
@@ -36,13 +37,22 @@ class AlohaSimEnvironment(_environment.Environment):
             raise RuntimeError("Observation is not set. Call reset() first.")
 
         return self._last_obs  # type: ignore
+    
+    @override
+    def get_info(self) -> dict:
+        if self._info is None:
+            raise RuntimeError("Info is not set. Call reset() first.")
+
+        return self._info  # type: ignore
 
     @override
     def apply_action(self, action: dict) -> None:
         gym_obs, reward, terminated, truncated, info = self._gym.step(action["actions"])
+        # print(f"terminated: {terminated}, truncated: {truncated}, reward: {reward}")
         self._last_obs = self._convert_observation(gym_obs)  # type: ignore
         self._done = terminated or truncated
         self._episode_reward = max(self._episode_reward, reward)
+        self._info = info
 
     def _convert_observation(self, gym_obs: dict) -> dict:
         img = gym_obs["pixels"]["top"]
