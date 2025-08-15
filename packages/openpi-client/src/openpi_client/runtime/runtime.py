@@ -132,25 +132,6 @@ class Runtime:
         """A single step of the runtime loop."""
         observation = self._environment.get_observation()
         action = self._agent.get_action(observation)
-        # print(list(action.keys()))
-        # print(f"-----------------------get_action 1----------------------------")
-        # for k, v in action.items():
-        #     if hasattr(v, 'shape'):
-        #         print(f"{k}: shape={v.shape}, dtype={v.dtype}")
-        #     elif isinstance(v, dict):
-        #         print(f"{k}: dict")
-        #         for k2, v2 in v.items():
-        #             if hasattr(v2, 'shape'):
-        #                 print(f"  {k2}: shape={v2.shape}, dtype={v2.dtype}")
-        #             else:
-        #                 print(f"  {k2}: {type(v2).__name__}")
-        #     elif isinstance(v, list):
-        #         print(f"{k}: list, len={len(v)}")
-        #         if v and hasattr(v[0], 'shape'):
-        #             print(f"  first elem shape={v[0].shape}, dtype={v[0].dtype}")
-        #     else:
-        #         print(f"{k}: {type(v).__name__}")
-        # print(f"-----------------------get_action 2----------------------------")
         self._environment.apply_action(action)
         # print(f"-----------------------apply_action----------------------------")
 

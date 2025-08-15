@@ -33,7 +33,6 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._stop_event = None
         self._thread = None
         self._is_first = True
-        self._old_act_step = 0
         self._action_count_end = 0
 
     def _start_infer_thread(self):
@@ -45,33 +44,17 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         while not self._stop_event.is_set():
             if self._last_obs is not None:
                 # print(f"-Running inference for action chunk broker with last observation--")
-                # old_buffer = self._buffer
-                # print(f"2.[标记] 线程:{threading.current_thread().name} | ActionChunkBroker id={id(self)}, policy id={id(self._policy)}, model id={id(self._policy._model)}")
-                # self._action_count_end = 0
                 self._buffer = self._policy.infer(self._last_obs)
-                # time.sleep(0.5)
                 # print(f"---------Finished inference for action chunk broker--------")
+                
                 if self._is_first:
                     self._rtc_current_step = 0
                     self._is_first = False
                 else:
-                    # blend_steps = 2
-                    # if (old_buffer is not None and 
-                    # hasattr(self, "_old_act_step") and 
-                    # self._old_act_step >= 4 + blend_steps):
-                    #     old_actions = old_buffer["actions"][self._old_act_step - blend_steps + 1:self._old_act_step + 1]
-                    #     new_actions = self._buffer["actions"][4:4 + blend_steps]
-                    #     w = np.array([[0.75], [0.25]])
-                    #     blended = w * old_actions + (1 - w) * new_actions
-                    #     self._buffer["actions"][4 : 4 + blend_steps] = blended
-
-                    # print(f"action count end: {self._action_count_end}")
                     # self._rtc_current_step = self._action_count_end - 1
-                    # print(f"RTC current step: {self._rtc_current_step}")
-
                     self._rtc_current_step = 3
-                # self._rtc_current_step = 0
-                time.sleep(0.5)  # Sleep to avoid busy waiting
+
+                # time.sleep(0.5)
 
     def close(self):
         # print(f"---------Closing ActionChunkBroker--------")
@@ -93,15 +76,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             # if self._rtc_current_step >= self._action_horizon:
             #     self._buffer = None
 
-            # if not self._is_first:
-            # print(f"1.[标记] 线程:{threading.current_thread().name} | ActionChunkBroker id={id(self)}, policy id={id(self._policy)}, model id={id(self._policy._model)}")
-            # self._policy.update_obs(self._last_obs)
-
             while self._buffer is None or self._rtc_current_step >= self._buffer["actions"].shape[0]:
-                # length = self._buffer["actions"].shape[0] if self._buffer is not None else 0
-                # print(f"rtc_current_step: {self._rtc_current_step}, buffer: {length}")
-                # print(f"Waiting for RTC buffer to be ready...")
-                # time.sleep(0.01)
                 pass
 
             def slicer(x):
@@ -111,8 +86,6 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                     return x
             results = tree.map_structure(slicer, self._buffer)
 
-            # print(f"RTC current step: {self._rtc_current_step}")
-            # self._old_act_step = self._rtc_current_step
             self._rtc_current_step += 1
             # self._action_count_end += 1
 
@@ -142,3 +115,4 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._cur_step = 0
         self._last_obs = None
         self._rtc_current_step = 0
+        self._action_count_end = 0
