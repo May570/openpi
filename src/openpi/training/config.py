@@ -713,6 +713,41 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
     ),
+    # orange norm
+    TrainConfig(
+        name="pi0_agilex_orange_norm",
+        model=pi0.Pi0Config(),
+        data=LeRobotAlohaDataConfig(
+            repo_id="task/orange_tasks",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/section/task/orange_tasks",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lyx/openpi/assets/pi0_agilex_orange/task",
+                asset_id="orange_tasks",
+            ),
+            default_prompt="pick up the orange and put it into the basket",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                        "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/songling_test/embodied/save_data/pi0_base/params"),
+        num_train_steps=100_000,
+    ),
     #
     # Debugging configs.
     #
