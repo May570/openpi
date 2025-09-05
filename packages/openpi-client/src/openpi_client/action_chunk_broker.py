@@ -8,6 +8,7 @@ from openpi_client import base_policy as _base_policy
 
 import threading
 import time
+import queue
 
 
 class ActionChunkBroker(_base_policy.BasePolicy):
@@ -19,7 +20,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
     list of chunks is exhausted.
     """
 
-    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, use_rtc: bool = False):
+    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, message_queue: queue.Queue, use_rtc: bool = False):
         self._policy = policy
         self._action_horizon = action_horizon
         self._cur_step: int = 0
@@ -34,6 +35,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._thread = None
         self._is_first = True
         self._action_count_end = 0
+        self.message_queue = message_queue
 
     def _start_infer_thread(self):
         self._stop_event = threading.Event()
@@ -53,7 +55,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                     self._is_first = False
                 else:
                     # self._rtc_current_step = self._action_count_end - 1
-                    self._rtc_current_step = 10
+                    self._rtc_current_step = 0
 
                 # time.sleep(0.5)  # Sleep to avoid busy waiting
 

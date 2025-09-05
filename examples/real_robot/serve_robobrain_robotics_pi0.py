@@ -17,6 +17,9 @@ POST /infer 输入样例：
 """huaihai path:
 /share/project/lvhuaihai# conda activate envs/openpi/
 """
+"""
+201行 offline 和 real_robot 有不同
+"""
 import os
 import io
 import base64
@@ -49,7 +52,7 @@ CORS(app)
 # 服务配置
 SERVICE_CONFIG = {
     'host': '0.0.0.0',  # 监听所有网络接口
-    'port': 5001,       # 服务端口
+    'port': 5002,       # 服务端口
     'debug': False,     # 生产环境设为False
     'threaded': True,   # 启用多线程
     'max_content_length': 16 * 1024 * 1024  # 最大请求大小16MB
@@ -57,7 +60,7 @@ SERVICE_CONFIG = {
 
 # 加载模型
 # MODEL_PATH = "/share/project/lyx/openpi/checkpoints/pi0_agilex_orange/pi0_agilex_orange/50000"
-MODEL_PATH = "/share/project/lvhuaihai/openpi/checkpoints/pi0_agilex_orange_paligemma_init/pi0_agilex_orange_paligemma_init/40000"
+MODEL_PATH = "/home/admin123/Desktop/90000"
 
 # 全局模型变量
 policy = None
@@ -69,7 +72,7 @@ def load_policy():
     try:
         logger.info("开始加载openpi模型...")
         # 使用openpi的配置和策略
-        config = _config.get_config("pi0_agilex_orange")
+        config = _config.get_config("pi0_agilex_orange_norm")
         policy = _policy_config.create_trained_policy(config, MODEL_PATH)        
         print(f"policy loaded.")    
         logger.info("openpi模型加载完成！")
@@ -119,7 +122,7 @@ def service_info():
         },
         "model_info": {
             "model_path": MODEL_PATH,
-            "model_type": "openpi_pi0_agilex_orange"
+            "model_type": "openpi_pi0_agilex_orange_norm"
         },
         "timestamp": time.time()
     })
@@ -140,14 +143,14 @@ def replay_api():
         # assert np.array(qpos).shape == (8, 50)
         # assert np.array(qpos).shape == (8, 50)
 
-        # qpos = np.load('/share/project/chenghy/code/model_eval_real/8.13_pi0/50/pre_action_G50_S4w.npy')
+        qpos = np.load('/home/admin123/桌面/wjl/openpi/test_orange/actions_episode_000005.npy').tolist()
         # qpos_real = np.load('/share/project/chenghy/code/model_eval_real/8.13_pi0/50/true_action_G50_S4w.npy')
         eepose = []
-        qpos = []
+        # qpos = []
         action_real = []
 
         
-        eepose = np.load("/share/project/lyx/robotics_final/action_h_30.npy").tolist()
+        # eepose = np.load("/share/project/lyx/robotics_final/action_h_30.npy").tolist()
 
         return jsonify({
             "success": True, 
@@ -192,8 +195,10 @@ def infer_api():
                 "error": "缺少必需字段: eef_pose"
             }), 400
         
+        logging.info(f"received keys: {data}")
+        
         images = data.get('images')
-        state = data.get('state')
+        state = data.get('state')  # 如果是 test_task_orange，就改成 state，否则用 qpos
 
         # 处理图片数据
         images_tensor = process_images(images)
@@ -211,6 +216,7 @@ def infer_api():
         logger.info(f"obs_images: {obs['images']['cam_left_wrist'].shape}")
         logger.info(f"obs_state: {obs['state'].shape}")
         logger.info(f"obs_prompt: {obs['prompt']}")
+        logging.info(f"obs: {obs}")
 
         # 执行推理
         with torch.no_grad():

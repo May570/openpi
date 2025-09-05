@@ -1,3 +1,7 @@
+"""
+openpi/.venv/lib/python3.11/site-packages/gym_aloha/__init__.py 可以改最大步数
+"""
+
 import pathlib
 import time
 import logging
