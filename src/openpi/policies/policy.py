@@ -33,6 +33,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+        self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)                      # rtc 复现
         self._rtc_new_obs_sample_actions_1 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_1)  # 只有状态更新，只有后缀每次都前向
         self._rtc_new_obs_sample_actions_2 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_2)  # 图像也更新，前缀和后缀每次都重新前向
         self._rtc_new_obs_sample_actions_3 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_3)  # 图像也更新，但是只更新两次
@@ -56,23 +57,23 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
 
-        # actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_3(
-        #     sample_rng,
-        #     _model.Observation.from_dict(inputs),
-        #     self.first_call,
-        #     self.last_actions,
-        #     self.debug_counter,
-        #     **self._sample_kwargs
-        # )
-        # outputs = {
-        #     "state": inputs["state"],
-        #     "actions": actions,
-        # }
-
+        actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_1(
+            sample_rng,
+            _model.Observation.from_dict(inputs),
+            self.first_call,
+            self.last_actions,
+            self.debug_counter,
+            **self._sample_kwargs
+        )
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            "actions": actions,
         }
+
+        # outputs = {
+        #     "state": inputs["state"],
+        #     "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+        # }
         
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
@@ -95,6 +96,7 @@ class Policy(BasePolicy):
         self.last_actions = None
         self.debug_counter = 0
         rtc_store.RTC_STORE[rtc_store.GLOBAL_KEY] = None
+        logging.info("Policy has been reset.")
 
     def update_obs(self, new_obs: dict) -> None:
         inputs = jax.tree.map(lambda x: x, new_obs)

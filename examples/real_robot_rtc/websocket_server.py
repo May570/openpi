@@ -11,7 +11,8 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 from openpi_client import base_policy as _base_policy
-from openpi_client import msgpack_numpy
+import msgpack_numpy
+import websockets
 import websockets.asyncio.server as _server
 import websockets.frames
 
@@ -36,14 +37,18 @@ class WebsocketPolicyServer:
         self._port = port
         self._metadata = metadata or {}
 
+        self._latest_raw = None
         self._latest_obs = None
-        self._thread = None
-        self._stop_event = None
+        # 推理线程
+        self._infer_thread = None
+        self._stop_infer_event = None
+        # 重构/更新线程
+        self._obs_thread = None
+        self._stop_obs_event = None
 
         self._loop = None
         self._ws = None
-        
-        self._update = False
+        self._lock = threading.Lock()
 
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
@@ -60,6 +65,16 @@ class WebsocketPolicyServer:
         except Exception as e:
             logger.error(f"图片解码失败: {e}")
             raise ValueError(f"图片解码失败: {e}")
+        
+    def decode_image_bytes(self, image_bytes: bytes):
+        """解码 JPEG/PNG bytes -> Tensor[C,H,W]"""
+        try:
+            image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            image = to_tensor(image)
+            return image
+        except Exception as e:
+            logger.error(f"图片解码失败: {e}")
+            raise ValueError(f"图片解码失败: {e}")
 
     def process_images(self, images_dict):
         """处理图片列表，适配openpi的图片格式"""
@@ -68,7 +83,8 @@ class WebsocketPolicyServer:
             # 根据openpi的配置调整图片键名
             for k in ['cam_high', 'cam_left_wrist', 'cam_right_wrist']:
                 if k in images_dict:
-                    sample_dict[k] = self.decode_image_base64(images_dict[k])
+                    # sample_dict[k] = self.decode_image_base64(images_dict[k])
+                    sample_dict[k] = self.decode_image_bytes(images_dict[k])
                 else:
                     logger.warning(f"缺少图片: {k}")
 
@@ -80,60 +96,65 @@ class WebsocketPolicyServer:
 
     def _start_infer_thread(self):
         self._stop_infer_thread()
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run_infer_loop, daemon=True)
-        self._thread.start()
+        self._stop_infer_event = threading.Event()
+        self._infer_thread = threading.Thread(target=self._run_infer_loop, daemon=True)
+        self._infer_thread.start()
+
+    def _start_obs_thread(self):
+        self._stop_obs_thread()
+        self._stop_obs_event = threading.Event()
+        self._obs_thread = threading.Thread(target=self._run_obs_loop, daemon=True)
+        self._obs_thread.start()
 
     def _stop_infer_thread(self):
-        if self._stop_event:
-            self._stop_event.set()
-        if self._thread and self._thread.is_alive():
+        if self._stop_infer_event:
+            self._stop_infer_event.set()
+        if self._infer_thread and self._infer_thread.is_alive():
             try:
-                self._thread.join(timeout=2.0)
+                self._infer_thread.join(timeout=2.0)
             except Exception:
                 logging.exception("Join infer thread failed")
-        self._thread = None
-        self._stop_event = None
+        self._infer_thread = None
+        self._stop_infer_event = None
+        logging.info("Infer thread stopped")
+
+    def _stop_obs_thread(self):
+        if self._stop_obs_event:
+            self._stop_obs_event.set()
+        if self._obs_thread and self._obs_thread.is_alive():
+            try:
+                self._obs_thread.join(timeout=2.0)
+            except Exception:
+                logging.exception("Join obs thread failed")
+        self._obs_thread = None
+        self._stop_obs_event = None
+        logging.info("Obs thread stopped")
 
     def _run_infer_loop(self):
-        while not self._stop_event.is_set():
-            if self._latest_obs is not None and self._update:
-                result = self._policy.infer(self._latest_obs)
+        while not self._stop_infer_event.is_set():
+            if self._latest_obs is not None:
+                with self._lock:
+                    observation = self._latest_obs
+                    self._latest_obs = None
+                try:
+                    result = self._policy.infer(observation)
+                except Exception as e:
+                    logging.error(f"Infer failed: {e}")
+                    break
                 if self._ws and self._loop:
-                    # 将推理结果返回给 WebSocket 客户端
                     logging.info(f"Sending inference result to client")
                     send_coro = self._ws.send(msgpack_numpy.packb(result))
                     asyncio.run_coroutine_threadsafe(send_coro, self._loop)
-                    self._update = False
-                    time.sleep(2)  # Sleep to avoid busy waiting
+                    time.sleep(3)
 
-    async def run(self):
-        async with _server.serve(
-            self._handler,
-            self._host,
-            self._port,
-            compression=None,
-            max_size=None,
-            process_request=_health_check,
-        ) as server:
-            await server.serve_forever()
-
-    async def _handler(self, websocket: _server.ServerConnection):
-        logger.info(f"Connection from {websocket.remote_address} opened")
-
-        self._stop_infer_thread()
-        self._latest_obs = None
-        self._loop = asyncio.get_running_loop()
-        self._ws = websocket
-
-        packer = msgpack_numpy.Packer()
-        await websocket.send(packer.pack(self._metadata))
-
-        while True:
-            try:
-                obs_data = msgpack_numpy.unpackb(await websocket.recv())
-                images = obs_data.get('images')
-                state = obs_data.get('state')
+    def _run_obs_loop(self):
+        while not self._stop_obs_event.is_set():
+            if self._latest_raw is not None:
+                with self._lock:
+                    raw_data = self._latest_raw
+                    self._latest_raw = None
+                images = raw_data.get('images')
+                state = raw_data.get('state')
                 images_tensor = self.process_images(images)
                 obs = {
                     "images": {
@@ -142,17 +163,51 @@ class WebsocketPolicyServer:
                         "cam_right_wrist": images_tensor['cam_right_wrist'],
                     },
                     "state": np.array(state[0]).astype(np.float32),
-                    "prompt": "pick up the orange and put it into the basket",
+                    "prompt": "task_orange_110_8.11",
                 }
+                with self._lock:
+                    self._latest_obs = obs
+                    logging.info("Observation reconstructed")
+                self._policy.update_obs(obs)
+                logging.info("Observation updated")
 
-                self._latest_obs = obs
-                self._update = True
+    async def run(self):
+        async with _server.serve(
+            self._handler,
+            self._host,
+            self._port,
+            # compression=None,
+            max_size=None,
+            process_request=_health_check,
+        ) as server:
+            await server.serve_forever()
 
-                if self._thread is None or not self._thread.is_alive():
-                    self._start_infer_thread()
+    async def _handler(self, websocket: _server.ServerConnection):
+        logger.info(f"Connection from {websocket.remote_address} opened")
+
+        self._loop = asyncio.get_running_loop()
+        self._ws = websocket
+        self._policy.reset()
+
+        self._start_infer_thread()
+        self._start_obs_thread()
+        self._latest_raw = None
+        self._latest_obs = None
+
+        packer = msgpack_numpy.Packer()
+        await websocket.send(packer.pack(self._metadata))
+
+        while True:
+            try:
+                data = msgpack_numpy.unpackb(await websocket.recv())
+                with self._lock:
+                    self._latest_raw = data
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
+                self._policy.reset()
+                self._stop_infer_thread()
+                self._stop_obs_thread()
                 break
             except Exception:
                 await websocket.send(traceback.format_exc())
