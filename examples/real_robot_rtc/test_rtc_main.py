@@ -23,7 +23,7 @@ to_tensor = transforms.ToTensor()
 class Args:
     host: str = "127.0.0.1"
     port: int = 8000
-    data_file: str = "/home/admin123/Desktop/episode_000005.parquet"  # 替换为实际数据文件路径
+    data_file: str = "/home/admin123/Desktop/episode_000003.parquet"  # 替换为实际数据文件路径
     test_interval: int = 50
 
 class TestClient:
@@ -137,9 +137,9 @@ class TestClient:
             else:
                 logger.warning("无法提取action序列，无法进行MSE对比")
             
-            logger.info(f"构建的测试数据包含:")
-            logger.info(f"  - qpos维度: {len(qpos)} x {len(qpos[0]) if qpos else 0}")
-            logger.info(f"  - 图片数量: {len(images)}")
+            # logger.info(f"构建的测试数据包含:")
+            # logger.info(f"  - qpos维度: {len(qpos)} x {len(qpos[0]) if qpos else 0}")
+            # logger.info(f"  - 图片数量: {len(images)}")
             
             return test_data
             
@@ -232,6 +232,6 @@ class TestClient:
 
 if __name__ == "__main__":
     # 设置参数
-    args = Args(data_file="/home/admin123/Desktop/episode_000005.parquet")  # 修改为实际数据路径
+    args = Args(data_file="/home/admin123/Desktop/episode_000003.parquet")  # 修改为实际数据路径
     client = TestClient(args)
     client.start()

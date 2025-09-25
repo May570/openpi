@@ -35,11 +35,6 @@ class Policy(BasePolicy):
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
     ):
-        self._sample_actions = nnx_utils.module_jit(model.sample_actions)
-        self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)                      # rtc 复现
-        self._rtc_new_obs_sample_actions_1 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_1)  # 只有状态更新，只有后缀每次都前向
-        self._rtc_new_obs_sample_actions_2 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_2)  # 图像也更新，前缀和后缀每次都重新前向
-        self._rtc_new_obs_sample_actions_3 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_3)  # 图像也更新，但是只更新两次
         """Initialize the Policy.
 
         Args:
@@ -58,9 +53,6 @@ class Policy(BasePolicy):
         self._output_transform = _transforms.compose(output_transforms)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
-        self.first_call = True
-        self.last_actions = None
-        self.debug_counter = 0
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
 
@@ -71,6 +63,15 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            self._rtc_original = nnx_utils.module_jit(model.rtc_original)
+            self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)                      # rtc 复现
+            self._rtc_new_obs_sample_actions_1 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_1)  # 只有状态更新，只有后缀每次都前向
+            # self._rtc_new_obs_sample_actions_2 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_2)  # 图像也更新，前缀和后缀每次都重新前向
+            # self._rtc_new_obs_sample_actions_3 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_3)  # 图像也更新，但是只更新两次
+            self._rtc_new_obs_sample_actions_4 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_4)  # 只有状态更新，但是只更新两次
+            self.first_call = True
+            self.last_actions = None
+            self.debug_counter = 0
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -100,15 +101,13 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
 
         if not self._is_pytorch_model:
-            self._rng, sample_rng = jax.random.split(self._rng)
-
-            actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_1(
-                sample_rng,
-                _model.Observation.from_dict(inputs),
+            actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_4(
+                sample_rng_or_pytorch_device,
+                observation,
                 self.first_call,
                 self.last_actions,
                 self.debug_counter,
-                **self._sample_kwargs
+                **sample_kwargs
             )
             outputs = {
                 "state": inputs["state"],
@@ -117,7 +116,7 @@ class Policy(BasePolicy):
 
             # outputs = {
             #     "state": inputs["state"],
-            #     "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            #     "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
             # }
             
             # Unbatch and convert to np.ndarray.
@@ -127,10 +126,9 @@ class Policy(BasePolicy):
                 "state": inputs["state"],
                 "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
             }
+            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         
         model_time = time.monotonic() - start_time
-        if self._is_pytorch_model:
-            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
 
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {

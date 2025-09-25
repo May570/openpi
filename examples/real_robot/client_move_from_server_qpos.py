@@ -1,10 +1,21 @@
+"""
+if ! ifconfig | grep -q "can_left"; then
+    source /home/agilex/cobot_magic/Piper_ros_private-ros-noetic/can_config.sh 
+    sleep 5
+fi
+export PYTHONPATH=$PYTHONPATH:/home/agilex/1ms.ai/pyorbbecsdk/install/lib/:/home/agilex/1ms.ai/ugv_sdk
+source /home/agilex/miniconda3/etc/profile.d/conda.sh  
+pkill dora
+conda activate dora
+ulimit -n 1000000
+"""
 import base64
 import io
 import time
 import numpy as np
 import requests
 import cv2
-import ipdb
+# import ipdb
 from piper_sdk import C_PiperInterface
 from robot_env import RobotEnv
 import datetime
@@ -40,8 +51,8 @@ def encode_image_from_frame(frames, cam_name):
 
 # 初始化 RobotEnv（替换成你实际的相机 index 和机械臂 IP）
 env = RobotEnv(
-    orbbec_serials=[0, 1, 2],
-    # realsense_serials=[0],
+    # orbbec_serials=[0, 1, 2],
+    realsense_serials=[0,1,2],
     arm_ip="can0+can1"
 )
 
@@ -49,12 +60,9 @@ env = RobotEnv(
 joint_command = [ 0.25434  ,  1.8082911, -1.327784 ,  0.7385629,  0.9807441, -0.199704 ,   0.6517 ,
                   -0.20462333,  1.6163499 , -1.0250355 , -0.92851543,  0.7400108 ,  0.37674767, 0.693,]
 
-orange_joint_command = [ 0.01589189,  2.1182265 , -1.3933052 ,  0.07597055,  0.85959244, 0.04619289,  0.5446    , -0.03087667, -0.00556478, -0.5014231, -0.01341478,  1.0700247 , -0.03094644,  0.6664]
-print(f"action: {orange_joint_command}")
-
-time.sleep(2)
-# env.control(orange_joint_command)
-env.control(joint_command)
+# time.sleep(2)
+# env.control(joint_command)
+# print(f"action: {joint_command}")
 time.sleep(6)
 
 try:
@@ -70,7 +78,7 @@ try:
         qpos = state["qpos"]  # 右+左
         eef_pose = state["eef_pose"]   # 右+左
 
-        qpos = np.concatenate([qpos[7:], qpos[:7]])
+        # qpos = np.concatenate([qpos[7:], qpos[:7]])
         now = datetime.datetime.now()
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         # 保存最新图像到当前目录
@@ -82,9 +90,9 @@ try:
             print(f"[Saved] {save_path}")
 
         encoded_images = {
-            "cam_high": encode_image_from_frame(frames, "orbbec_2"),
-            "cam_left_wrist": encode_image_from_frame(frames, "orbbec_1"),
-            "cam_right_wrist": encode_image_from_frame(frames, "orbbec_0"),
+            "cam_high": encode_image_from_frame(frames, "realsense_2"),
+            "cam_left_wrist": encode_image_from_frame(frames, "realsense_0"),
+            "cam_right_wrist": encode_image_from_frame(frames, "realsense_1"),
             # "cam_high_realsense": encode_image_from_frame(frames, "realsense_0"),
         }
         # import ipdb; ipdb.set_trace()
@@ -99,7 +107,7 @@ try:
         # response = requests.post("http://172.16.17.185:8000/infer", json=data, timeout=60)
 
 
-        response = requests.post("http://172.16.13.99:5002/infer", json=data, timeout=60)
+        response = requests.post("http://172.16.13.99:5003/infer", json=data, timeout=60)
 
         # response = requests.post("http://172.16.20.231:5001/infer", json=data, timeout=60)
         print("[√] Response:", response.status_code)
@@ -143,9 +151,10 @@ try:
                 # ipdb.set_trace()
             
                 # # 调换前7维（右手）和后7维（左手）
-                if action.shape[0] == 14:
-                    action = np.concatenate([action[7:], action[:7]])
-
+                # if action.shape[0] == 14:
+                #     action = np.concatenate([action[7:], action[:7]])
+                action[6] = 10*action[6]
+                action[13] = 10*action[13]
                 # action[:] = np.concatenate([action[:,7:14], action[:, 0:7]], axis=1)
                 print(f"[→ Step {i+1}] 执行动作: {action.round(3)}")
                 env.control(action)

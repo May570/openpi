@@ -76,15 +76,40 @@ class WebsocketPolicyServer:
             logger.error(f"图片解码失败: {e}")
             raise ValueError(f"图片解码失败: {e}")
 
+    # def process_images(self, images_dict):
+    #     """处理图片列表，适配openpi的图片格式"""
+    #     try:
+    #         sample_dict = {}
+    #         # 根据openpi的配置调整图片键名
+    #         for k in ['cam_high', 'cam_left_wrist', 'cam_right_wrist']:
+    #             if k in images_dict:
+    #                 # sample_dict[k] = self.decode_image_base64(images_dict[k])
+    #                 sample_dict[k] = self.decode_image_bytes(images_dict[k])
+    #             else:
+    #                 logger.warning(f"缺少图片: {k}")
+
+    #     except Exception as e:
+    #         logger.error(f"处理图片失败: {e}")
+    #         raise ValueError(f"处理图片失败: {e}")
+
+    #     return sample_dict
+
     def process_images(self, images_dict):
         """处理图片列表，适配openpi的图片格式"""
         try:
             sample_dict = {}
-            # 根据openpi的配置调整图片键名
             for k in ['cam_high', 'cam_left_wrist', 'cam_right_wrist']:
                 if k in images_dict:
-                    # sample_dict[k] = self.decode_image_base64(images_dict[k])
-                    sample_dict[k] = self.decode_image_bytes(images_dict[k])
+                    val = images_dict[k]
+                    if isinstance(val, str):
+                        # test 客户端发来的 base64 str
+                        image_bytes = base64.b64decode(val)
+                        sample_dict[k] = self.decode_image_bytes(image_bytes)
+                    elif isinstance(val, (bytes, bytearray)):
+                        # 直接是 bytes
+                        sample_dict[k] = self.decode_image_bytes(val)
+                    else:
+                        logger.error(f"不支持的图片类型: {type(val)} for key={k}")
                 else:
                     logger.warning(f"缺少图片: {k}")
 
@@ -138,6 +163,7 @@ class WebsocketPolicyServer:
                     self._latest_obs = None
                 try:
                     result = self._policy.infer(observation)
+                    logging.info(f"Infer result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else result}")
                 except Exception as e:
                     logging.error(f"Infer failed: {e}")
                     break
@@ -145,7 +171,7 @@ class WebsocketPolicyServer:
                     logging.info(f"Sending inference result to client")
                     send_coro = self._ws.send(msgpack_numpy.packb(result))
                     asyncio.run_coroutine_threadsafe(send_coro, self._loop)
-                    time.sleep(3)
+                    time.sleep(1)
 
     def _run_obs_loop(self):
         while not self._stop_obs_event.is_set():
@@ -163,13 +189,13 @@ class WebsocketPolicyServer:
                         "cam_right_wrist": images_tensor['cam_right_wrist'],
                     },
                     "state": np.array(state[0]).astype(np.float32),
-                    "prompt": "task_orange_110_8.11",
+                    "prompt": "Pick up the fruit and place it into the bowl.",
                 }
                 with self._lock:
                     self._latest_obs = obs
                     logging.info("Observation reconstructed")
-                self._policy.update_obs(obs)
-                logging.info("Observation updated")
+                # self._policy.update_obs(obs)
+                # logging.info("Observation updated")
 
     async def run(self):
         async with _server.serve(

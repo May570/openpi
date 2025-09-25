@@ -643,12 +643,12 @@ def main():
     parser = argparse.ArgumentParser(description="task_orange推理测试程序")
     parser.add_argument(
         "--url", 
-        default="http://127.0.0.1:5002",
-        help="服务地址 (默认: http://127.0.0.1:5002)"
+        default="http://127.0.0.1:5003",
+        help="服务地址 (默认: http://127.0.0.1:5003)"
     )
     parser.add_argument(
         "--data-file",
-        default="/home/admin123/Desktop/episode_000005.parquet",
+        default="/home/admin123/Desktop/episode_000003.parquet",
         help="数据文件路径"
     )
     parser.add_argument(

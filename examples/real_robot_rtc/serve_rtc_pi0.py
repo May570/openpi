@@ -18,7 +18,9 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
-    ORANGE = "real_robot"
+    PI0_ORANGE = "pi0_orange"
+    PI05_ORANGE = "pi05_orange"
+    PI05_FRUIT = "pi05_fruit"
 
 
 @dataclasses.dataclass
@@ -41,7 +43,7 @@ class Args:
     """Arguments for the serve_policy script."""
 
     # Environment to serve the policy for. This is only used when serving default policies.
-    env: EnvMode = EnvMode.ORANGE
+    env: EnvMode = EnvMode.PI05_FRUIT
 
     # If provided, will be used in case the "prompt" key is not present in the data, or if the model doesn't have a default
     # prompt.
@@ -74,9 +76,17 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
         config="pi0_fast_libero",
         dir="gs://openpi-assets/checkpoints/pi0_fast_libero",
     ),
-    EnvMode.ORANGE: Checkpoint(
+    EnvMode.PI0_ORANGE: Checkpoint(
         config="pi0_agilex_orange_norm",
-        dir="/home/admin123/Desktop/90000",
+        dir="/home/admin123/Desktop/pi0_orange/90k",
+    ),
+    EnvMode.PI05_ORANGE: Checkpoint(
+        config="pi05_agilex_orange",
+        dir="/home/admin123/Desktop/pi05_orange/20k",
+    ),
+    EnvMode.PI05_FRUIT: Checkpoint(
+        config="pi05_agilex_fruit",
+        dir="/home/admin123/Desktop/pi05_fruit/20k",
     ),
 }
 

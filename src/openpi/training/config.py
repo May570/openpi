@@ -921,10 +921,12 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
     ),
-    # orange norm
+    #
+    # orange task 
+    #
     TrainConfig(
         name="pi0_agilex_orange_norm",
-        model=pi0.Pi0Config(),
+        model=pi0_config.Pi0Config(),
         data=LeRobotAlohaDataConfig(
             repo_id="task/orange_tasks",
             base_config=DataConfig(
@@ -955,6 +957,84 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/songling_test/embodied/save_data/pi0_base/params"),
         num_train_steps=100_000,
+    ),
+    TrainConfig(
+        name="pi05_agilex_orange",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="task/orange_200_9_8",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/section/task/orange_200_9_8",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lvhuaihai/models/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="pick up the orange and put it into the basket",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                        "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/lvhuaihai/models/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=64,
+    ),
+    TrainConfig(
+        name="pi05_agilex_fruit",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="agilex_5_tasks/task_Songling5_eval50_task4",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/section/agilex_5_tasks/task_Songling5_eval50_task4",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lvhuaihai/models/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="Pick up the fruit and place it into the bowl.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                        "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/lvhuaihai/models/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=64,
     ),
     #
     # Debugging configs.

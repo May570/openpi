@@ -3,6 +3,7 @@ assets/
 checkpoints/
 data/
 wandb/
+examples/real_robot/test
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -41,6 +42,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+output.txt
 
 # Unit test / coverage reports
 htmlcov/

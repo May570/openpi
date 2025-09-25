@@ -20,7 +20,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
     list of chunks is exhausted.
     """
 
-    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, message_queue: queue.Queue, use_rtc: bool = False):
+    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, use_rtc: bool = False):
         self._policy = policy
         self._action_horizon = action_horizon
         self._cur_step: int = 0
@@ -35,7 +35,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._thread = None
         self._is_first = True
         self._action_count_end = 0
-        self.message_queue = message_queue
+        self.temp = 0
 
     def _start_infer_thread(self):
         self._stop_event = threading.Event()
@@ -47,7 +47,9 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             if self._last_obs is not None:
                 # print(f"-Running inference for action chunk broker with last observation--")
                 # self._action_count_end = 0
+                self.temp = 0
                 self._buffer = self._policy.infer(self._last_obs)
+                print(f"--infer delay steps: {self.temp}--")
                 # print(f"---------Finished inference for action chunk broker--------")
 
                 if self._is_first:
@@ -55,9 +57,11 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                     self._is_first = False
                 else:
                     # self._rtc_current_step = self._action_count_end - 1
-                    self._rtc_current_step = 0
+                    self._rtc_current_step = 1
+                print(f"-------Last chunk used {self._action_count_end} steps-------")
+                self._action_count_end = 0
 
-                # time.sleep(0.5)  # Sleep to avoid busy waiting
+                # time.sleep(0.13)  # Sleep to avoid busy waiting
 
     def close(self):
         # print(f"---------Closing ActionChunkBroker--------")
@@ -92,7 +96,8 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             results = tree.map_structure(slicer, self._buffer)
 
             self._rtc_current_step += 1
-            # self._action_count_end += 1
+            self._action_count_end += 1
+            self.temp += 1
 
         else:
             if self._last_results is None:

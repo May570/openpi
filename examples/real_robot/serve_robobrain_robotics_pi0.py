@@ -52,7 +52,7 @@ CORS(app)
 # 服务配置
 SERVICE_CONFIG = {
     'host': '0.0.0.0',  # 监听所有网络接口
-    'port': 5002,       # 服务端口
+    'port': 5003,       # 服务端口
     'debug': False,     # 生产环境设为False
     'threaded': True,   # 启用多线程
     'max_content_length': 16 * 1024 * 1024  # 最大请求大小16MB
@@ -60,7 +60,7 @@ SERVICE_CONFIG = {
 
 # 加载模型
 # MODEL_PATH = "/share/project/lyx/openpi/checkpoints/pi0_agilex_orange/pi0_agilex_orange/50000"
-MODEL_PATH = "/home/admin123/Desktop/90000"
+MODEL_PATH = "/home/admin123/Desktop/pi05_fruit/20k"
 
 # 全局模型变量
 policy = None
@@ -72,7 +72,7 @@ def load_policy():
     try:
         logger.info("开始加载openpi模型...")
         # 使用openpi的配置和策略
-        config = _config.get_config("pi0_agilex_orange_norm")
+        config = _config.get_config("pi05_agilex_fruit")
         policy = _policy_config.create_trained_policy(config, MODEL_PATH)        
         print(f"policy loaded.")    
         logger.info("openpi模型加载完成！")
@@ -122,7 +122,7 @@ def service_info():
         },
         "model_info": {
             "model_path": MODEL_PATH,
-            "model_type": "openpi_pi0_agilex_orange_norm"
+            "model_type": "pi05_agilex_fruit"
         },
         "timestamp": time.time()
     })
@@ -143,7 +143,7 @@ def replay_api():
         # assert np.array(qpos).shape == (8, 50)
         # assert np.array(qpos).shape == (8, 50)
 
-        qpos = np.load('/home/admin123/桌面/wjl/openpi/test_orange/actions_episode_000005.npy').tolist()
+        qpos = np.load('/home/admin123/Desktop/pi05_orange/actions_episode_000003.npy').tolist()
         # qpos_real = np.load('/share/project/chenghy/code/model_eval_real/8.13_pi0/50/true_action_G50_S4w.npy')
         eepose = []
         # qpos = []
@@ -198,7 +198,7 @@ def infer_api():
         logging.info(f"received keys: {data}")
         
         images = data.get('images')
-        state = data.get('state')  # 如果是 test_task_orange，就改成 state，否则用 qpos
+        state = data.get('qpos')  # 如果是 test_task_orange，就改成 state，否则用 qpos
 
         # 处理图片数据
         images_tensor = process_images(images)
@@ -211,7 +211,7 @@ def infer_api():
                 "cam_right_wrist": images_tensor['cam_right_wrist'],
             },
             "state": np.array(state[0]).astype(np.float32),
-            "prompt": "task_orange_110_8.11",
+            "prompt": "Pick up the fruit and place it into the bowl.",
         }
         logger.info(f"obs_images: {obs['images']['cam_left_wrist'].shape}")
         logger.info(f"obs_state: {obs['state'].shape}")
@@ -222,6 +222,25 @@ def infer_api():
         with torch.no_grad():
             output = policy.infer(obs)
             action = output['actions']
+
+        # # === 新增：保存到 infer_actions/chunk_xxx.npy ===
+        # save_dir = "infer_actions"
+        # os.makedirs(save_dir, exist_ok=True)
+
+        # # 查找已有的 chunk 文件
+        # existing_files = sorted(glob.glob(os.path.join(save_dir, "chunk_*.npy")))
+
+        # if existing_files:
+        #     # 取最后一个编号
+        #     last_file = os.path.basename(existing_files[-1])
+        #     last_idx = int(last_file.split("_")[1].split(".")[0])
+        #     next_idx = last_idx + 1
+        # else:
+        #     next_idx = 1
+
+        # filename = os.path.join(save_dir, f"chunk_{next_idx:03d}.npy")
+        # np.save(filename, action)
+        # logger.info(f"动作已保存到 {filename}")
 
         # 添加处理时间信息
         processing_time = time.time() - start_time
@@ -267,7 +286,7 @@ def _parse_obs_from_json(data):
             "cam_right_wrist": images_tensor.get("cam_right_wrist"),
         },
         "state": np.array(state[0]).astype(np.float32) if isinstance(state, list) else np.array(state).astype(np.float32),
-        "prompt": data.get("instruction", "task_orange_110_8.11"),
+        "prompt": data.get("instruction", "pick up the orange and put it into the basket"),
     }
     return obs
 

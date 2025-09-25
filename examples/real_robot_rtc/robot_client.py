@@ -1,20 +1,9 @@
-"""
-if ! ifconfig | grep -q "can_left"; then
-    source /home/agilex/cobot_magic/Piper_ros_private-ros-noetic/can_config.sh 
-    sleep 5
-fi
-export PYTHONPATH=$PYTHONPATH:/home/agilex/1ms.ai/pyorbbecsdk/install/lib/:/home/agilex/1ms.ai/ugv_sdk
-source /home/agilex/miniconda3/etc/profile.d/conda.sh  
-pkill dora
-conda activate dora
-ulimit -n 1000000
-"""
 import dataclasses
 import numpy as np
 import base64
 import queue
 import threading
-# import ipdb
+import ipdb
 import time
 import cv2
 
@@ -63,18 +52,16 @@ def encode_image_from_frame(frames, cam_name):
     
 # 初始化 RobotEnv
 env = RobotEnv(
-    realsense_serials=[0, 1, 2],
-    # orbbec_serials=[0, 1, 2],
+    orbbec_serials=[0, 1, 2],
+    # realsense_serials=[0],
     arm_ip="can0+can1"
 )
 
 # 初始位置
 joint_command = [ 0.25434  ,  1.8082911, -1.327784 ,  0.7385629,  0.9807441, -0.199704 ,   0.6517 ,
                   -0.20462333,  1.6163499 , -1.0250355 , -0.92851543,  0.7400108 ,  0.37674767, 0.693,]
-initial_joints = [-0.00397733, -0.00605322, -0.49913788,  0.00526822,  1.0267626,  -0.01317056,   0.06944,
-                    0.01102489, -0.00575667, -0.49264854,  0.02784133,  1.0572903, -0.01531622,  0.0851    ]
-# time.sleep(2)
-# env.control(initial_joints)
+time.sleep(2)
+env.control(joint_command)
 time.sleep(6)
 
 class TestClient:
@@ -116,7 +103,7 @@ class TestClient:
                     self.buffer = actions
                     self._first = True
                 else:
-                    self.buffer = actions[7:]
+                    self.buffer = actions[5:]
                 print(f"-----------------换包：收到新动作 {len(self.buffer)} 条-----------------")
                 # self.delay = self.count
 
@@ -139,11 +126,11 @@ class TestClient:
                 # print(f"[Saved] {save_path}")
 
             qpos = state["qpos"]
-            # qpos = np.concatenate([qpos[7:], qpos[:7]])
+            qpos = np.concatenate([qpos[7:], qpos[:7]])
             encoded_images = {
-                "cam_high": encode_image_from_frame(frames, "realsense_2"),
-                "cam_left_wrist": encode_image_from_frame(frames, "realsense_0"),
-                "cam_right_wrist": encode_image_from_frame(frames, "realsense_1"),
+                "cam_high": encode_image_from_frame(frames, "orbbec_2"),
+                "cam_left_wrist": encode_image_from_frame(frames, "orbbec_1"),
+                "cam_right_wrist": encode_image_from_frame(frames, "orbbec_0"),
             }
             data = {
                 "state": [qpos.tolist()],           # shape: [1, 14]
@@ -165,16 +152,14 @@ class TestClient:
                     time.sleep(0.1)
                 
                 action = self.buffer.pop(0)
-                # action = np.concatenate([action[7:], action[:7]])
+                action = np.concatenate([action[7:], action[:7]])
                 # print(f"[→ Step {self.count}] 执行动作: {action.round(3)}")
                 print(f"[→ Step {self.count}] 执行动作---")
-                action[6] = 10*action[6]
-                action[13] = 10*action[13]
                 t0 = time.time(); env.control(action); dt = time.time()-t0
                 print(f"执行耗时 {dt*1000:.1f} ms")
                 t0 = time.time(); last_obs = self._wait_obs(); dt = time.time()-t0
                 print(f"观测耗时 {dt*1000:.1f} ms")
-                self.ws_client.send_obs(last_obs)
+                self.ws_client.send_obs(data)
                 self.count += 1
                 # time.sleep(0.05)
 
@@ -187,10 +172,8 @@ class TestClient:
             #     # 连续执行 n 个动作
             #     for i in range(BATCH_SIZE):
             #         action = self.buffer.pop(0)
-            #         # action = np.concatenate([action[7:], action[:7]])
-            #         print(f"[→ Step {self.count}] ")
-            #         action[6] = 10*action[6]
-            #         action[13] = 10*action[13]
+            #         action = np.concatenate([action[7:], action[:7]])
+            #         print(f"[→ Step {self.count}] 执行动作: {action.round(3)}")
             #         t0 = time.time(); env.control(action); dt = time.time()-t0
             #         print(f"执行耗时 {dt*1000:.1f} ms")
             #         self.count += 1
