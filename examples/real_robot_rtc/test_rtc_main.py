@@ -23,7 +23,7 @@ to_tensor = transforms.ToTensor()
 class Args:
     host: str = "127.0.0.1"
     port: int = 8000
-    data_file: str = "/home/admin123/Desktop/episode_000003.parquet"  # 替换为实际数据文件路径
+    data_file: str = "/home/admin123/Desktop/pi05_orange/episode_000003.parquet"  # 替换为实际数据文件路径
     test_interval: int = 50
 
 class TestClient:
@@ -232,6 +232,6 @@ class TestClient:
 
 if __name__ == "__main__":
     # 设置参数
-    args = Args(data_file="/home/admin123/Desktop/episode_000003.parquet")  # 修改为实际数据路径
+    args = Args(data_file="/home/admin123/Desktop/pi05_orange/episode_000003.parquet")  # 修改为实际数据路径
     client = TestClient(args)
     client.start()

@@ -63,8 +63,9 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            self._meanflow_sample_actions = nnx_utils.module_jit(model.meanflow_sample_actions)
             self._rtc_original = nnx_utils.module_jit(model.rtc_original)
-            self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)                      # rtc 复现
+            # self._rtc_sample_actions = nnx_utils.module_jit(model.rtc_sample_actions)                      # rtc 复现
             self._rtc_new_obs_sample_actions_1 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_1)  # 只有状态更新，只有后缀每次都前向
             # self._rtc_new_obs_sample_actions_2 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_2)  # 图像也更新，前缀和后缀每次都重新前向
             # self._rtc_new_obs_sample_actions_3 = nnx_utils.module_jit(model.rtc_new_obs_sample_actions_3)  # 图像也更新，但是只更新两次
@@ -101,7 +102,7 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
 
         if not self._is_pytorch_model:
-            actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_new_obs_sample_actions_4(
+            actions, self.first_call, self.last_actions, self.debug_counter = self._rtc_original(
                 sample_rng_or_pytorch_device,
                 observation,
                 self.first_call,

@@ -105,6 +105,13 @@ class Pi0(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
+        self.use_meanflow = config.use_meanflow
+        self.data_proportion = config.data_proportion
+        self.P_mean = config.P_mean
+        self.P_std = config.P_std
+        self.norm_p = config.norm_p
+        self.norm_eps = config.norm_eps
+
     @at.typecheck
     def embed_prefix(
         self, obs: _model.Observation
@@ -187,6 +194,58 @@ class Pi0(_model.BaseModel):
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
+    
+    @at.typecheck
+    def meanflow_embed_suffix(
+        self, obs: _model.Observation, noisy_actions: _model.Actions, t: at.Float[at.Array, " b"], r: at.Float[at.Array, " b"]
+    ) -> tuple[
+        at.Float[at.Array, "b s emb"],
+        at.Bool[at.Array, "b s"],
+        at.Bool[at.Array, " s"],
+        at.Float[at.Array, "b emb"] | None,
+    ]:
+        input_mask = []
+        ar_mask = []
+        tokens = []
+        if not self.pi05:
+            # add a single state token
+            state_token = self.state_proj(obs.state)[:, None, :]
+            tokens.append(state_token)
+            input_mask.append(jnp.ones((obs.state.shape[0], 1), dtype=jnp.bool_))
+            # image/language inputs do not attend to state or actions
+            ar_mask += [True]
+
+        action_tokens = self.action_in_proj(noisy_actions)
+        # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
+        dt_s = t - r
+        time_emb = (posemb_sincos(t,  self.action_in_proj.out_features, min_period=4e-3, max_period=4.0) + 
+                    posemb_sincos(dt_s, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0))
+        
+        if self.pi05:
+            # time MLP (for adaRMS)
+            time_emb = self.time_mlp_in(time_emb)
+            time_emb = nnx.swish(time_emb)
+            time_emb = self.time_mlp_out(time_emb)
+            time_emb = nnx.swish(time_emb)
+            action_expert_tokens = action_tokens
+            adarms_cond = time_emb
+        else:
+            # mix timestep + action information using an MLP (no adaRMS)
+            time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.action_horizon)
+            action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
+            action_time_tokens = self.action_time_mlp_in(action_time_tokens)
+            action_time_tokens = nnx.swish(action_time_tokens)
+            action_time_tokens = self.action_time_mlp_out(action_time_tokens)
+            action_expert_tokens = action_time_tokens
+            adarms_cond = None
+        tokens.append(action_expert_tokens)
+        input_mask.append(jnp.ones(action_expert_tokens.shape[:2], dtype=jnp.bool_))
+        # image/language/state inputs do not attend to action tokens
+        ar_mask += [True] + ([False] * (self.action_horizon - 1))
+        tokens = jnp.concatenate(tokens, axis=1)
+        input_mask = jnp.concatenate(input_mask, axis=1)
+        ar_mask = jnp.array(ar_mask)
+        return tokens, input_mask, ar_mask, adarms_cond
 
     @override
     def compute_loss(
@@ -215,6 +274,76 @@ class Pi0(_model.BaseModel):
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        
+    @override
+    def meanflow_compute_loss(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False, step = None
+    ) -> at.Float[at.Array, "*b ah"]:
+        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        batch_shape = actions.shape[:-2]
+
+        # 1) 采样
+        n1 = jax.random.normal(jax.random.fold_in(time_rng, 0), batch_shape)
+        n2 = jax.random.normal(jax.random.fold_in(time_rng, 1), batch_shape)
+        t  = jax.nn.sigmoid(self.P_std * n1 + self.P_mean)
+        r  = jax.nn.sigmoid(self.P_std * n2 + self.P_mean)
+        t, r = jnp.maximum(t, r), jnp.minimum(t, r)
+
+        # 一部分样本替换
+        batch_size = actions.shape[0]
+        data_size = jnp.floor(batch_size * self.data_proportion).astype(jnp.int32)
+        zero_mask = jnp.arange(batch_size) < data_size
+        r = jnp.where(zero_mask, t, r)
+
+        # 与 actions 对齐维度
+        t_expanded = t[..., None, None]
+        r_expanded = r[..., None, None]
+
+        # 2) 构造噪声与插值样本
+        noise = jax.random.normal(noise_rng, actions.shape)
+        z_t = (1.0 - t_expanded) * actions + t_expanded * noise
+        v = noise - actions
+
+        # 引导速度 和 标签丢弃
+
+        # 3) 前向 + JVP
+        def u_fn(z, tt, rr):
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.meanflow_embed_suffix(observation, z, t, r)
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            ar_mask    = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            attn_mask  = make_attn_mask(input_mask, ar_mask)
+            positions  = jnp.cumsum(input_mask, axis=1) - 1
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [prefix_tokens, suffix_tokens],
+                mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+            )
+            return self.action_out_proj(suffix_out[:, -self.action_horizon:])  
+
+        # JVP 得到平均速度 u_pred 与时间方向导数 du/dt
+        u_pred, du_dt = jax.jvp(u_fn, (z_t, t_expanded, r_expanded), (v, jnp.ones_like(t_expanded), jnp.zeros_like(t_expanded)))
+
+        # 4) 构造目标并算损失
+        u_tgt = v - jnp.clip(t_expanded - r_expanded, a_min=0.0, a_max=1.0) * du_dt
+        diff  = u_pred - jax.lax.stop_gradient(u_tgt)
+        loss = jnp.mean(jnp.square(diff), axis=-1)
+
+        # 样本级聚合 + 加权
+        # w = 1.0 / jnp.power(jnp.mean(loss, axis=-1, keepdims=True) + self.norm_eps, self.norm_p)
+        # loss = w * loss
+
+        # # 打印
+        # p_t = mask.astype(jnp.float32).mean()
+        # dt_mean = dt.mean()
+        # dt_max  = dt.max()
+        # def _do_print(_):
+        #     jdebug.print("step={} p_t={} dt_mean={} dt_max={}",
+        #                 step, p_t, dt_mean, dt_max,)
+        #     return None
+        # _ = jax.lax.cond(jnp.remainder(step, 100) == 0, _do_print, lambda _: None, operand=None)
+
+        return loss
 
     @override
     def sample_actions(
@@ -281,6 +410,84 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+    
+    @override
+    def meanflow_sample_actions(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> _model.Actions:
+        # 1-NFE
+        # self.action_horizon = 50
+        observation = _model.preprocess_observation(None, observation, train=False)
+        batch_size = observation.state.shape[0]
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        t = jnp.ones((batch_size,), dtype=noise.dtype)
+        r = jnp.zeros((batch_size,), dtype=noise.dtype)
+
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.meanflow_embed_suffix(observation, noise, t, r)
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        assert full_attn_mask.shape == (
+            batch_size,
+            suffix_tokens.shape[1],
+            prefix_tokens.shape[1] + suffix_tokens.shape[1],
+        )
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+            [None, suffix_tokens],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, adarms_cond],
+        )
+        assert prefix_out is None
+        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        return noise - v_t
+
+        # def step_fn(i, inputs):
+        #     x_i, t, r = inputs
+
+        #     suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.meanflow_embed_suffix(observation, x_i, t, r)
+        #     suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        #     prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        #     full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        #     assert full_attn_mask.shape == (
+        #         batch_size,
+        #         suffix_tokens.shape[1],
+        #         prefix_tokens.shape[1] + suffix_tokens.shape[1],
+        #     )
+        #     positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+        #     (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        #         [None, suffix_tokens],
+        #         mask=full_attn_mask,
+        #         positions=positions,
+        #         kv_cache=kv_cache,
+        #         adarms_cond=[None, adarms_cond],
+        #     )
+        #     assert prefix_out is None
+        #     v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        #     outputs = (x_i - v_t * (t-r)[:, None, None], t - 0.3, r + 0.3)
+        #     return outputs
+
+        # outputs = jax.lax.fori_loop(0, 1, step_fn, (noise, t, r))
+
+        # return outputs[0]
     
     def rtc_sample_actions(
         self,
@@ -421,8 +628,8 @@ class Pi0(_model.BaseModel):
         num_steps: int | at.Int[at.Array, ""] = 10,
         guide_beta: float = 2.0,
     ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        infer_delay_length = 3
-        sleep_delay_length = 7
+        infer_delay_length = 12
+        sleep_delay_length = 0
         self.action_horizon = 50
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -531,7 +738,7 @@ class Pi0(_model.BaseModel):
                 cut = x[:, sleep_delay_length:, :]
                 zeros = jnp.zeros((cut.shape[0], sleep_delay_length, cut.shape[2]), dtype=cut.dtype)
                 return jnp.concatenate([cut, zeros], axis=1)
-            return first_call, clip_and_pad(last_actions)
+            return False, clip_and_pad(last_actions)
             # return False, last_actions
 
         def modify(carry):
@@ -557,9 +764,9 @@ class Pi0(_model.BaseModel):
         num_steps: int | at.Int[at.Array, ""] = 10,
         guide_beta: float = 2.0,
     ) -> tuple[_model.Actions, bool, jax.Array, int]:
-        infer_delay_length = 10
+        infer_delay_length = 13
         sleep_delay_length = 0
-        self.action_horizon = 60
+        self.action_horizon = 50
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
@@ -682,7 +889,11 @@ class Pi0(_model.BaseModel):
 
         def no_change(carry):
             first_call, last_actions = carry
-            return False, last_actions
+            def clip_and_pad(x):
+                cut = x[:, sleep_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], sleep_delay_length, cut.shape[2]), dtype=cut.dtype)
+                return jnp.concatenate([cut, zeros], axis=1)
+            return False, clip_and_pad(last_actions)
 
         def modify(carry):
             first_call, last_actions = carry
@@ -1063,7 +1274,7 @@ class Pi0(_model.BaseModel):
     ) -> tuple[_model.Actions, bool, jax.Array, int]:
         infer_delay_length = 10
         sleep_delay_length = 0
-        self.action_horizon = 60
+        self.action_horizon = 50
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
@@ -1226,8 +1437,8 @@ class Pi0(_model.BaseModel):
         def modify(carry):
             first_call, last_actions = carry
             def clip_and_pad(x):
-                cut = x[:, infer_delay_length:, :]
-                zeros = jnp.zeros((cut.shape[0], infer_delay_length, cut.shape[2]), dtype=cut.dtype)
+                cut = x[:, infer_delay_length + sleep_delay_length:, :]
+                zeros = jnp.zeros((cut.shape[0], infer_delay_length + sleep_delay_length, cut.shape[2]), dtype=cut.dtype)
                 return jnp.concatenate([cut, zeros], axis=1)
             return first_call, clip_and_pad(last_actions)
 

@@ -60,7 +60,7 @@ SERVICE_CONFIG = {
 
 # 加载模型
 # MODEL_PATH = "/share/project/lyx/openpi/checkpoints/pi0_agilex_orange/pi0_agilex_orange/50000"
-MODEL_PATH = "/home/admin123/Desktop/pi05_fruit/20k"
+MODEL_PATH = "/home/admin123/Desktop/pi05_orange/20k"
 
 # 全局模型变量
 policy = None
@@ -72,7 +72,7 @@ def load_policy():
     try:
         logger.info("开始加载openpi模型...")
         # 使用openpi的配置和策略
-        config = _config.get_config("pi05_agilex_fruit")
+        config = _config.get_config("pi05_agilex_orange")
         policy = _policy_config.create_trained_policy(config, MODEL_PATH)        
         print(f"policy loaded.")    
         logger.info("openpi模型加载完成！")
@@ -122,7 +122,7 @@ def service_info():
         },
         "model_info": {
             "model_path": MODEL_PATH,
-            "model_type": "pi05_agilex_fruit"
+            "model_type": "pi05_agilex_orange"
         },
         "timestamp": time.time()
     })
@@ -198,7 +198,7 @@ def infer_api():
         logging.info(f"received keys: {data}")
         
         images = data.get('images')
-        state = data.get('qpos')  # 如果是 test_task_orange，就改成 state，否则用 qpos
+        state = data.get('state')  # 如果是 test_task_orange，就改成 state，否则用 qpos
 
         # 处理图片数据
         images_tensor = process_images(images)
@@ -211,7 +211,7 @@ def infer_api():
                 "cam_right_wrist": images_tensor['cam_right_wrist'],
             },
             "state": np.array(state[0]).astype(np.float32),
-            "prompt": "Pick up the fruit and place it into the bowl.",
+            "prompt": "Pick up the orange and place it into the basket.",
         }
         logger.info(f"obs_images: {obs['images']['cam_left_wrist'].shape}")
         logger.info(f"obs_state: {obs['state'].shape}")

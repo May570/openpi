@@ -28,6 +28,8 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
+import openpi.shared.nnx_utils as nnx_utils
+
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
@@ -920,6 +922,88 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # meanflow 
+    #
+    TrainConfig(
+        name="pi0_meanflow_libero",
+        model=pi0_config.Pi0Config(
+            use_meanflow=True,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="openpi/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/lyx/robotics_final/data/openpi/libero",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lyx/robotics_final/assets/pi0_libero",
+                asset_id="openpi/libero",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/pi0_base/params"),
+        num_train_steps=20_000,
+        batch_size=64,
+    ),
+    TrainConfig(
+        name="pi0_meanflow_libero_AE",
+        model=pi0_config.Pi0Config(
+            use_meanflow=True,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="openpi/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/lyx/robotics_final/data/openpi/libero",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lyx/robotics_final/assets/pi0_libero",
+                asset_id="openpi/libero",
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(local_path="/share/project/wujiling/checkpoints/google/paligemma_2b/pt_224.npz"),
+        freeze_filter = nnx_utils.PathRegex(r"^PaliGemma(\.|$)"),
+        num_train_steps=100_000,
+        batch_size=64,
+    ),
+    TrainConfig(
+        name="pi0_meanflow_libero_init",
+        model=pi0_config.Pi0Config(
+            use_meanflow=True,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="openpi/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/lyx/robotics_final/data/openpi/libero",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lyx/robotics_final/assets/pi0_libero",
+                asset_id="openpi/libero",
+            ),
+        ),
+        num_train_steps=100_000,
+        batch_size=64,
+    ),
+    TrainConfig(
+        name="pi0_my_libero",
+        model=pi0_config.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="openpi/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/lyx/robotics_final/data/openpi/libero",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/lyx/robotics_final/assets/pi0_libero",
+                asset_id="openpi/libero",
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(local_path="/share/project/wujiling/checkpoints/google/paligemma_2b/pt_224.npz"),
+        freeze_filter = nnx_utils.PathRegex(r"^PaliGemma(\.|$)"),
+        num_train_steps=10_000,
+        batch_size=64,
     ),
     #
     # orange task 

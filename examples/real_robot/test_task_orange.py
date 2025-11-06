@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class TaskTester:
     """task_orange推理测试器"""
     
-    def __init__(self, service_url="http://127.0.0.1:5002", data_file="/home/admin123/Desktop/episode_000005.parquet", test_interval=50, output_file="all_inference_results.json", predicted_actions_file="predicted_actions.npy", true_actions_file="true_actions.npy"):
+    def __init__(self, service_url="http://127.0.0.1:5002", data_file="/home/admin123/Desktop/pi05_orange/episode_000003.parquet", test_interval=50, output_file="all_inference_results.json", predicted_actions_file="predicted_actions.npy", true_actions_file="true_actions.npy"):
         self.service_url = service_url
         self.data_file = data_file
         self.test_interval = test_interval  # 测试间隔（帧数）
@@ -648,7 +648,7 @@ def main():
     )
     parser.add_argument(
         "--data-file",
-        default="/home/admin123/Desktop/episode_000003.parquet",
+        default="/home/admin123/Desktop/pi05_orange/episode_000003.parquet",
         help="数据文件路径"
     )
     parser.add_argument(

@@ -49,7 +49,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                 # self._action_count_end = 0
                 self.temp = 0
                 self._buffer = self._policy.infer(self._last_obs)
-                print(f"--infer delay steps: {self.temp}--")
+                # print(f"--infer delay steps: {self.temp}--")
                 # print(f"---------Finished inference for action chunk broker--------")
 
                 if self._is_first:
@@ -57,11 +57,11 @@ class ActionChunkBroker(_base_policy.BasePolicy):
                     self._is_first = False
                 else:
                     # self._rtc_current_step = self._action_count_end - 1
-                    self._rtc_current_step = 1
-                print(f"-------Last chunk used {self._action_count_end} steps-------")
+                    self._rtc_current_step = 11
+                # print(f"-------Last chunk used {self._action_count_end} steps-------")
                 self._action_count_end = 0
 
-                # time.sleep(0.13)  # Sleep to avoid busy waiting
+                # time.sleep(0.05)  # Sleep to avoid busy waiting
 
     def close(self):
         # print(f"---------Closing ActionChunkBroker--------")
@@ -83,7 +83,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             # if self._rtc_current_step >= self._action_horizon:
             #     self._buffer = None
 
-            self._policy.update_obs(self._last_obs)
+            # self._policy.update_obs(self._last_obs)
 
             while self._buffer is None or self._rtc_current_step >= self._buffer["actions"].shape[0]:
                 pass
@@ -113,6 +113,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
             results = tree.map_structure(slicer, self._last_results)
             self._cur_step += 1
 
+            # if self._cur_step >= 30:
             if self._cur_step >= self._action_horizon:
                 self._last_results = None
 
