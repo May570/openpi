@@ -1,0 +1,113 @@
+{
+  "test_summary": {
+    "total_test_points": 8,
+    "successful_tests": 8,
+    "test_interval": 50,
+    "test_points": [
+      0,
+      50,
+      100,
+      150,
+      200,
+      250,
+      300,
+      350
+    ]
+  },
+  "performance_metrics": {
+    "mse_statistics": {
+      "mean_mse": 0.009019564898675584,
+      "std_mse": 0.007482390333783546,
+      "min_mse": 0.0010097230086599368,
+      "max_mse": 0.024987636737487943
+    },
+    "processing_time_statistics": {
+      "mean_time": 3.2962689101696014,
+      "std_time": 8.406076138097216,
+      "min_time": 0.1012113094329834,
+      "max_time": 25.536579370498657
+    }
+  },
+  "detailed_results": [
+    {
+      "test_point": 0,
+      "mse": 0.016607652705140773,
+      "processing_time": 25.536579370498657,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000000.png"
+    },
+    {
+      "test_point": 50,
+      "mse": 0.007640267565482773,
+      "processing_time": 0.15190649032592773,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000050.png"
+    },
+    {
+      "test_point": 100,
+      "mse": 0.0028453588629078637,
+      "processing_time": 0.10332727432250977,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000100.png"
+    },
+    {
+      "test_point": 150,
+      "mse": 0.0070130587969035865,
+      "processing_time": 0.10527729988098145,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000150.png"
+    },
+    {
+      "test_point": 200,
+      "mse": 0.0010097230086599368,
+      "processing_time": 0.10657382011413574,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000200.png"
+    },
+    {
+      "test_point": 250,
+      "mse": 0.024987636737487943,
+      "processing_time": 0.1012113094329834,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000250.png"
+    },
+    {
+      "test_point": 300,
+      "mse": 0.0038809425714908764,
+      "processing_time": 0.1602916717529297,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000300.png"
+    },
+    {
+      "test_point": 350,
+      "mse": 0.008171878941330929,
+      "processing_time": 0.10498404502868652,
+      "actions_shape": [
+        50,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000350.png"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable
 
 import flax.traverse_util
 import numpy as np
+from pathlib import Path
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
@@ -63,9 +64,10 @@ class PaliGemmaWeightLoader(WeightLoader):
     """
 
     def load(self, params: at.Params) -> at.Params:
-        path = download.maybe_download(
-            "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
-        )
+        # path = download.maybe_download(
+        #     "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
+        # )
+        path = Path("/share/project/wujiling/models/base/paligemma_pt_224/pt_224.npz")
         with path.open("rb") as f:
             flat_params = dict(np.load(f, allow_pickle=False))
         loaded_params = {"PaliGemma": flax.traverse_util.unflatten_dict(flat_params, sep="/")["params"]}

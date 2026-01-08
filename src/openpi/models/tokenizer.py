@@ -6,6 +6,7 @@ import numpy as np
 import orbax.checkpoint as ocp
 import sentencepiece
 from transformers import AutoProcessor
+from pathlib import Path
 
 import openpi.models.utils.fsq_tokenizer as fsq_tokenizer
 import openpi.shared.download as download
@@ -15,7 +16,8 @@ class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        # path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        path = Path("/share/project/wujiling/models/tokenizers/paligemma_tokenizer.model")
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 

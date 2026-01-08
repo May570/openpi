@@ -142,7 +142,16 @@ class Normalize(DataTransformFn):
         assert stats.q01 is not None
         assert stats.q99 is not None
         q01, q99 = stats.q01[..., : x.shape[-1]], stats.q99[..., : x.shape[-1]]
-        return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+
+        min_range = 1e-2
+        # 原始 range
+        range_ = q99 - q01
+        # 对于几乎不变的维度（比如 q99≈q01），把 range 强行抬到一个下限
+        # 这样不会出现分母 1e-6 这种极小值
+        safe_range = np.where(np.abs(range_) < min_range, min_range, range_)
+        x_norm = (x - q01) / (safe_range + 1e-6) * 2.0 - 1.0
+        
+        return x_norm
 
 
 @dataclasses.dataclass(frozen=True)

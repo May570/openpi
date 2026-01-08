@@ -1,0 +1,3 @@
+episode_path,task,frames,state_abs_mean_max,state_std_max,action_abs_mean_max,action_std_max,has_nan_inf
+/share/project/section/agilex_6_data/agilex_10_data/open_close/close_drawer/原本颜色/2025.10.24.11.56/episode_20.hdf5,Close the drawer on the plain table.,334,100.14947509765625,1806.82666015625,1.2968558073043823,0.7300143837928772,False
+/share/project/section/agilex_6_data/agilex_10_data/fold_clothes/白色短袖/2025.10.23.16.16/episode_13.hdf5,Fold the white T-shirt and place it on the tray in the top-left corner.,1328,25.046146392822266,907.210693359375,0.9829506278038025,0.8375938534736633,False
