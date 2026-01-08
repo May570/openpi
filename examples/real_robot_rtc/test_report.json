@@ -1,0 +1,146 @@
+{
+  "test_summary": {
+    "total_test_points": 11,
+    "successful_tests": 11,
+    "test_interval": 50,
+    "test_points": [
+      0,
+      50,
+      100,
+      150,
+      200,
+      250,
+      300,
+      350,
+      400,
+      450,
+      500
+    ]
+  },
+  "performance_metrics": {
+    "mse_statistics": {
+      "mean_mse": 0.0010429330668479235,
+      "std_mse": 0.0018951296511051966,
+      "min_mse": 1.9719569342749536e-05,
+      "max_mse": 0.006586079253012704
+    },
+    "processing_time_statistics": {
+      "mean_time": 2.971121809699319,
+      "std_time": 8.975142344275575,
+      "min_time": 0.1150047779083252,
+      "max_time": 31.35294508934021
+    }
+  },
+  "detailed_results": [
+    {
+      "test_point": 0,
+      "mse": 0.006586079253012704,
+      "processing_time": 31.35294508934021,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000000.png"
+    },
+    {
+      "test_point": 50,
+      "mse": 9.584154590972065e-05,
+      "processing_time": 0.14408040046691895,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000050.png"
+    },
+    {
+      "test_point": 100,
+      "mse": 0.00021795043817512643,
+      "processing_time": 0.16690468788146973,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000100.png"
+    },
+    {
+      "test_point": 150,
+      "mse": 0.00013090211223118017,
+      "processing_time": 0.11699271202087402,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000150.png"
+    },
+    {
+      "test_point": 200,
+      "mse": 0.0003285566234362365,
+      "processing_time": 0.1150047779083252,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000200.png"
+    },
+    {
+      "test_point": 250,
+      "mse": 0.0005807276662000061,
+      "processing_time": 0.11681652069091797,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000250.png"
+    },
+    {
+      "test_point": 300,
+      "mse": 0.00013903425001564012,
+      "processing_time": 0.16875267028808594,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000300.png"
+    },
+    {
+      "test_point": 350,
+      "mse": 0.002700389006184939,
+      "processing_time": 0.14735651016235352,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000350.png"
+    },
+    {
+      "test_point": 400,
+      "mse": 0.0004738249821245412,
+      "processing_time": 0.11523962020874023,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000400.png"
+    },
+    {
+      "test_point": 450,
+      "mse": 1.9719569342749536e-05,
+      "processing_time": 0.1192014217376709,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000450.png"
+    },
+    {
+      "test_point": 500,
+      "mse": 0.00019923828869431384,
+      "processing_time": 0.11904549598693848,
+      "actions_shape": [
+        16,
+        14
+      ],
+      "visualization_file": "figs/action_comparison_frame_000500.png"
+    }
+  ]
+}

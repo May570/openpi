@@ -200,8 +200,7 @@ def preprocess_observation(
     return Observation(
         images=out_images,
         image_masks=out_masks,
-        # state=observation.state,
-        state=jnp.zeros_like(observation.state),
+        state=observation.state,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
@@ -281,7 +280,20 @@ class BaseModel(nnx.Module, abc.ABC):
     ) -> at.Float[at.Array, "*b ah"]: ...
 
     @abc.abstractmethod
+    def meanflow_compute_loss(
+        self,
+        rng: at.KeyArrayLike,
+        observation: Observation,
+        actions: Actions,
+        *,
+        train: bool = False,
+    ) -> at.Float[at.Array, "*b ah"]: ...
+
+    @abc.abstractmethod
     def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
+
+    @abc.abstractmethod
+    def meanflow_sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
 
 
 def restore_params(

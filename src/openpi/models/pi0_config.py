@@ -32,6 +32,15 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # meanflow
+    use_meanflow: bool = False
+    data_proportion: float = 0.25
+    P_mean: float = -0.4
+    P_std: float = 1.0
+    norm_p: float = 1.0
+    norm_eps: float = 1e-3
+
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)

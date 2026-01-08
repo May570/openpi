@@ -1,6 +1,7 @@
 import dataclasses
 import logging
 import re
+import pathlib
 from typing import Protocol, runtime_checkable
 
 import flax.traverse_util
@@ -62,10 +63,17 @@ class PaliGemmaWeightLoader(WeightLoader):
     This allows us to support the action expert which is used by the Pi0 model.
     """
 
+    local_path: str | None = None
+
     def load(self, params: at.Params) -> at.Params:
-        path = download.maybe_download(
-            "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
-        )
+        if self.local_path is None:
+            path = download.maybe_download(
+                "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz",
+                gs={"token": "anon"},
+            )
+        else:
+            path = pathlib.Path(self.local_path)
+
         with path.open("rb") as f:
             flat_params = dict(np.load(f, allow_pickle=False))
         loaded_params = {"PaliGemma": flax.traverse_util.unflatten_dict(flat_params, sep="/")["params"]}
