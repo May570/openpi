@@ -91,6 +91,8 @@ class Policy(BasePolicy):
         start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
+            # "eef_state": inputs["state"],      # 为 Unnormalize(eef_state) 添加
+            # "eef_action": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),  # 为 Unnormalize(eef_action) 添加
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
         model_time = time.monotonic() - start_time

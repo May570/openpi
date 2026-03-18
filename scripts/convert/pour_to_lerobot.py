@@ -8,6 +8,7 @@ import dataclasses
 from pathlib import Path
 import shutil
 from typing import Literal
+from scipy.spatial.transform import Rotation as R
 
 import h5py
 from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME as LEROBOT_HOME
@@ -58,6 +59,18 @@ def read_and_resize(path: Path) -> np.ndarray:
     return img
 
 
+def quat_to_3d(quaternions: np.ndarray) -> np.ndarray:
+    """四元数转3D表示"""
+    is_single = quaternions.ndim == 1
+    if is_single:
+        quaternions = quaternions[np.newaxis, :]
+
+    rot = R.from_quat(quaternions)
+    d3 = rot.as_euler("xyz")
+
+    return d3.flatten() if is_single else d3
+
+
 def create_empty_dataset(
     repo_id: str,
     robot_type: str,
@@ -67,7 +80,23 @@ def create_empty_dataset(
     has_effort: bool = False,
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ) -> LeRobotDataset:
-    motors = [
+    eef_motors = [
+        "right_1",  
+        "right_2",
+        "right_3",  
+        "right_4",
+        "right_5",
+        "right_6",
+        "right_gripper",
+        "left_1",
+        "left_2",
+        "left_3",
+        "left_4",
+        "left_5",
+        "left_6",
+        "left_gripper",
+    ]
+    joint_motors = [
         "right_1",  
         "right_2",
         "right_3",  
@@ -92,39 +121,35 @@ def create_empty_dataset(
     ]
 
     features = {
-        "observation.state": {
+        "observation.eef_state": {
             "dtype": "float32",
-            "shape": (len(motors),),
+            "shape": (len(eef_motors),),
             "names": [
-                motors,
+                eef_motors,
             ],
         },
-        "action": {
+        "eef_action": {
             "dtype": "float32",
-            "shape": (len(motors),),
+            "shape": (len(eef_motors),),
             "names": [
-                motors,
+                eef_motors,
+            ],
+        },
+        "observation.joint_state": {
+            "dtype": "float32",
+            "shape": (len(joint_motors),),
+            "names": [
+                joint_motors,
+            ],
+        },
+        "joint_action": {
+            "dtype": "float32",
+            "shape": (len(joint_motors),),
+            "names": [
+                joint_motors,
             ],
         },
     }
-
-    if has_velocity:
-        features["observation.velocity"] = {
-            "dtype": "float32",
-            "shape": (len(motors),),
-            "names": [
-                motors,
-            ],
-        }
-
-    if has_effort:
-        features["observation.effort"] = {
-            "dtype": "float32",
-            "shape": (len(motors),),
-            "names": [
-                motors,
-            ],
-        }
 
     for cam in cameras:
         features[f"observation.images.{cam}"] = {
@@ -154,84 +179,51 @@ def create_empty_dataset(
     )
 
 
-def filter_static_frames(
-    qpos: np.ndarray, 
-    action: np.ndarray, 
+def filt_frames_a2d(
+    eef_state: np.ndarray, 
+    eef_action: np.ndarray, 
+    joint_state: np.ndarray, 
+    joint_action: np.ndarray, 
     images: dict[str, np.ndarray],
-    velocity: np.ndarray | None = None,
-    effort: np.ndarray | None = None,
-    position_threshold: float = 1e-4,
-    action_threshold: float = 1e-4,
     min_frames: int = 10
-) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray], np.ndarray | None, np.ndarray | None]:
-    """
-    过滤掉起始和结束的静止帧
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    if eef_state.shape[0] <= min_frames:
+        return eef_state, eef_action, joint_state, joint_action, images
     
-    Args:
-        qpos: 关节位置数据 (frames, joints)
-        action: 动作数据 (frames, joints)  
-        images: 图像数据字典
-        velocity: 关节速度数据 (可选)
-        effort: 关节力矩数据 (可选)
-        position_threshold: 位置变化阈值，用于判断是否静止
-        action_threshold: 动作变化阈值，用于判断是否静止
-        min_frames: 保留的最小帧数
-        
-    Returns:
-        过滤后的数据元组
-    """
-    if qpos.shape[0] <= min_frames:
-        return qpos, action, images, velocity, effort
-    
-    # 计算关节位置的变化
-    position_diff = np.diff(qpos, axis=0)
-    position_magnitude = np.linalg.norm(position_diff, axis=1)
-    
-    # 计算动作的变化
-    action_diff = np.diff(action, axis=0)
-    action_magnitude = np.linalg.norm(action_diff, axis=1)
-    
-    # 找到非静止帧的索引
-    non_static_mask = (position_magnitude > position_threshold) | (action_magnitude > action_threshold)
-    
-    # 找到第一个和最后一个非静止帧
-    if np.any(non_static_mask):
-        first_non_static = np.where(non_static_mask)[0][0]
-        last_non_static = np.where(non_static_mask)[0][-1] + 1
-        
-        # 确保至少保留min_frames帧
-        if last_non_static - first_non_static < min_frames:
-            # 如果非静止帧太少，扩展范围
-            extra_frames = min_frames - (last_non_static - first_non_static)
-            first_non_static = max(0, first_non_static - extra_frames // 2)
-            last_non_static = min(qpos.shape[0], last_non_static + extra_frames // 2)
-    else:
-        # 如果没有检测到运动，保留中间部分
-        mid_point = qpos.shape[0] // 2
-        half_min = min_frames // 2
-        first_non_static = max(0, mid_point - half_min)
-        last_non_static = min(qpos.shape[0], mid_point + half_min)
-    
-    # 应用过滤
-    filtered_qpos = qpos[first_non_static:last_non_static]
-    filtered_action = action[first_non_static:last_non_static]
-    
-    filtered_images = {}
-    for cam_name, img_array in images.items():
-        filtered_images[cam_name] = img_array[first_non_static:last_non_static]
-    
-    filtered_velocity = None
-    if velocity is not None:
-        filtered_velocity = velocity[first_non_static:last_non_static]
-    
-    filtered_effort = None
-    if effort is not None:
-        filtered_effort = effort[first_non_static:last_non_static]
-    
-    print(f"  过滤静止帧: {qpos.shape[0]} -> {filtered_qpos.shape[0]} 帧 "
-          f"(移除前{first_non_static}帧和后{qpos.shape[0]-last_non_static}帧)")
-    
-    return filtered_qpos, filtered_action, filtered_images, filtered_velocity, filtered_effort
+    filtered_eef_state = []
+    filtered_eef_action = []
+    filtered_joint_state = []
+    filtered_joint_action = []
+    filtered_images = {key: [] for key in images} 
+
+    filtered_eef_state.append(eef_state[0])
+    filtered_eef_action.append(eef_action[0])
+    filtered_joint_state.append(joint_state[0])
+    filtered_joint_action.append(joint_action[0])
+    for key in images:
+        filtered_images[key].append(images[key][0])
+
+    filtered_num = 0
+
+    for i in range(1, len(eef_state)):
+        if not np.allclose(eef_state[i - 1], eef_state[i], rtol=1e-5, atol=1e-6):
+            filtered_eef_state.append(eef_state[i])
+            filtered_eef_action.append(eef_action[i])
+            filtered_joint_state.append(joint_state[i])
+            filtered_joint_action.append(joint_action[i])
+            for key in images:
+                filtered_images[key].append(images[key][i])
+        else:
+            filtered_num += 1
+
+    filtered_eef_state = np.array(filtered_eef_state, dtype=np.float32)
+    filtered_eef_action = np.array(filtered_eef_action, dtype=np.float32) 
+    filtered_joint_state = np.array(filtered_joint_state, dtype=np.float32)
+    filtered_joint_action = np.array(filtered_joint_action, dtype=np.float32) 
+
+    print(f"  过滤静止帧: {eef_state.shape[0]} -> {filtered_eef_state.shape[0]} 帧 ")
+
+    return filtered_eef_state, eef_action, joint_state, joint_action, filtered_images
 
 
 def map_raw_to_local(raw_data_path: str, raw_dir: Path) -> Path:
@@ -298,8 +290,47 @@ def load_raw_A2D_episode(
     if not cam_root.exists():
         raise FileNotFoundError(f"找不到 camera 目录: {cam_root}")
 
-    # 1) 读取 state 和 action 的 joint + effector
+    # # 1) 读取 state 和 action 的 joint + effector
+    # with h5py.File(h5_path, "r") as f:
+    #     state_joint = f["state/joint/position"][:]              # (T_s,14)
+    #     state_left = f["state/left_effector/position"][:]       # (T_s,1)
+    #     state_right = f["state/right_effector/position"][:]     # (T_s,1)
+
+    #     action_joint = f["action/joint/position"][:]            # (T_a,14)
+    #     action_left = f["action/left_effector/position"][:]     # (T_a,1)
+    #     action_right = f["action/right_effector/position"][:]   # (T_a,1)
+
+    # T = min(state_joint.shape[0], action_joint.shape[0])
+    # state_joint, state_left, state_right = state_joint[:T], state_left[:T], state_right[:T]
+    # action_joint, action_left, action_right = action_joint[:T], action_left[:T], action_right[:T]
+
+    # # 16 维 = 右臂7 + 右爪 + 左臂7 + 左爪
+    # state_qpos = np.concatenate(
+    #     (state_joint[:, 7:], state_right, state_joint[:, :7], state_left),
+    #     axis=1,
+    # ).astype("float32")   # (T,16)
+
+    # action_qpos = np.concatenate(
+    #     (action_joint[:, 7:], action_right, action_joint[:, :7], action_left),
+    #     axis=1,
+    # ).astype("float32")   # (T,16)
+
+    # 1) 读取 state 和 action 的 eef + effector
     with h5py.File(h5_path, "r") as f:
+        state_eepose_pos = f["action"]["end"]["position"][:]
+        state_eepose_left_orientation = quat_to_3d(
+            f["action"]["end"]["orientation"][:, 0, :]
+        )
+        state_eepose_right_orientation = quat_to_3d(
+            f["action"]["end"]["orientation"][:, 1, :]
+        )
+        state_eepose_left_gripper = (
+            1 - f["action"]["left_effector"]["position"][:]
+        )
+        state_eepose_right_gripper = (
+            1 - f["action"]["right_effector"]["position"][:]
+        )
+
         state_joint = f["state/joint/position"][:]              # (T_s,14)
         state_left = f["state/left_effector/position"][:]       # (T_s,1)
         state_right = f["state/right_effector/position"][:]     # (T_s,1)
@@ -308,9 +339,8 @@ def load_raw_A2D_episode(
         action_left = f["action/left_effector/position"][:]     # (T_a,1)
         action_right = f["action/right_effector/position"][:]   # (T_a,1)
 
+
     T = min(state_joint.shape[0], action_joint.shape[0])
-    state_joint, state_left, state_right = state_joint[:T], state_left[:T], state_right[:T]
-    action_joint, action_left, action_right = action_joint[:T], action_left[:T], action_right[:T]
 
     # 16 维 = 右臂7 + 右爪 + 左臂7 + 左爪
     state_qpos = np.concatenate(
@@ -322,6 +352,19 @@ def load_raw_A2D_episode(
         (action_joint[:, 7:], action_right, action_joint[:, :7], action_left),
         axis=1,
     ).astype("float32")   # (T,16)
+
+    # 14 维 = 右臂6 + 右爪 + 左臂6 + 左爪
+    state_eepose = np.concatenate(
+            [
+                state_eepose_pos[:, 1, :],
+                state_eepose_right_orientation,
+                state_eepose_right_gripper,
+                state_eepose_pos[:, 0, :],
+                state_eepose_left_orientation,
+                state_eepose_left_gripper,
+            ],
+            axis=-1,
+        ).astype("float32")
 
     # 2) 用 label_info 决定截取帧区间
     label = data_item.get("label_info")
@@ -343,8 +386,10 @@ def load_raw_A2D_episode(
     end = max(start, min(end, T - 1))
     end_excl = end + 1
 
-    state_qpos = state_qpos[start:end_excl]
-    action_qpos = action_qpos[start:end_excl]
+    eef_state = state_eepose[start:end_excl]
+    eef_action = state_eepose[start:end_excl]
+    joint_state = state_qpos[start:end_excl]
+    joint_action = action_qpos[start:end_excl]
 
     # 3) 读取三路相机图像（保持 HWC，BGR→RGB）
     head_color: list[np.ndarray] = []
@@ -374,10 +419,12 @@ def load_raw_A2D_episode(
         "cam_right_wrist": np.stack(head_right_color, axis=0),
     }
 
-    state = torch.from_numpy(state_qpos)
-    action = torch.from_numpy(action_qpos)
+    eef_state = torch.from_numpy(eef_state)
+    eef_action = torch.from_numpy(eef_action)
+    joint_state = torch.from_numpy(joint_state)
+    joint_action = torch.from_numpy(joint_action)
 
-    return imgs_per_cam, state, action
+    return imgs_per_cam, eef_state, eef_action, joint_state, joint_action
 
 
 # ========================
@@ -408,48 +455,41 @@ def populate_dataset(
             skipped += 1
             continue
 
-        imgs_per_cam, state, action = load_raw_A2D_episode(item, raw_dir)
-        velocity = None
-        effort = None
+        imgs_per_cam, eef_state, eef_action, joint_state, joint_action = load_raw_A2D_episode(item, raw_dir)
 
         # 根据配置决定是否过滤静止帧
         if dataset_config.filter_static_frames:
-            filtered_state, filtered_action, filtered_images, filtered_velocity, filtered_effort = filter_static_frames(
-                state.numpy(),
-                action.numpy(),
+            filtered_eef_state, filtered_eef_action, filtered_joint_state, filtered_joint_action, filtered_images = filt_frames_a2d(
+                eef_state.numpy(),
+                eef_action.numpy(),
+                joint_state.numpy(),
+                joint_action.numpy(),
                 imgs_per_cam,
-                velocity.numpy() if velocity is not None else None,
-                effort.numpy() if effort is not None else None,
-                position_threshold=dataset_config.position_threshold,
-                action_threshold=dataset_config.action_threshold,
                 min_frames=dataset_config.min_frames,
             )
 
-            state = torch.from_numpy(filtered_state)
-            action = torch.from_numpy(filtered_action)
+            eef_state = torch.from_numpy(filtered_eef_state)
+            eef_action = torch.from_numpy(filtered_eef_action)
+            joint_state = torch.from_numpy(filtered_joint_state)
+            joint_action = torch.from_numpy(filtered_joint_action)
             imgs_per_cam = filtered_images
-            velocity = torch.from_numpy(filtered_velocity) if filtered_velocity is not None else None
-            effort = torch.from_numpy(filtered_effort) if filtered_effort is not None else None
 
-        num_frames = state.shape[0]
+        num_frames = eef_state.shape[0]
         if num_frames == 0:
             print(f"  episode_id={item.get('episode_id')} 过滤后无帧，跳过")
             continue
 
         for i in range(num_frames):
             frame = {
-                "observation.state": state[i],
-                "action": action[i],
+                "observation.eef_state": eef_state[i],
+                "eef_action": eef_action[i],
+                "observation.joint_state": joint_state[i],
+                "joint_action": joint_action[i],
                 "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
                 frame[f"observation.images.{camera}"] = img_array[i]
-
-            if velocity is not None:
-                frame["observation.velocity"] = velocity[i]
-            if effort is not None:
-                frame["observation.effort"] = effort[i]
 
             dataset.add_frame(frame)
 
@@ -491,8 +531,6 @@ def port_A2D(
             repo_id,
             robot_type="A2D",
             mode=mode,
-            has_effort=False,
-            has_velocity=False,
             dataset_config=dataset_config,
         )
     else:

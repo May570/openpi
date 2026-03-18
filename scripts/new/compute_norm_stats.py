@@ -7,6 +7,11 @@
 python compute_norm_stats.py \
     --episodes-stats /share/project/wujiling/data/processed/pour_coffee/meta/episodes_stats.jsonl \
     --output /share/project/wujiling/models/base/pi05_base/assets/pour_coffee/norm_stats.json
+
+python openpi/scripts/new/compute_norm_stats.py \
+    --episodes-stats /share/project/wujiling/datasets/multi/multitask_demo/meta/episodes_stats.jsonl \
+    --output /share/project/wujiling/datasets/multi/multitask_demo/meta/norm_stats.json
+    
 """
 
 import argparse
@@ -38,6 +43,10 @@ def aggregate_from_episode_stats(episodes_stats_path: str) -> Dict[str, Any]:
     fields = {
         "state": "observation.state",
         "actions": "action",
+        # "eef_state": "observation.eef_state",
+        # "eef_action": "eef_action",
+        # "joint_state": "observation.joint_state",
+        # "joint_action": "joint_action",
     }
 
     # 累加器

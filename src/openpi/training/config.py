@@ -17,6 +17,7 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
+import openpi.policies.a2d_policy as a2d_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -91,6 +92,9 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # If true, will disable syncing the dataset from the Hugging Face Hub. Allows training on local-only datasets.
+    local_files_only: bool = False
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -255,6 +259,7 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     )
     # Action keys that will be used to read the action sequence from the dataset.
     action_sequence_keys: Sequence[str] = ("action",)
+    # action_sequence_keys: Sequence[str] = ("eef_action",)
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -278,7 +283,61 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
         )
-    
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotA2DDataConfig(DataConfigFactory):
+    """A2D Data config for 16-dimensional dual-arm robot."""
+    # If true, will convert joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+    # If true, this will adapt the data for pi internal runtime.
+    adapt_to_pi: bool = True
+
+    # Repack transforms.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {"cam_high": "observation.images.top"},
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("joint_action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[a2d_policy.A2DInputs(adapt_to_pi=self.adapt_to_pi)],
+            outputs=[a2d_policy.A2DOutputs(adapt_to_pi=self.adapt_to_pi)],
+        )
+        if self.use_delta_joint_actions:
+            # A2D has 14 joints (without grippers): right_1~7 and left_1~7
+            # Grippers are at indices 7 and 15
+            delta_action_mask = _transforms.make_bool_mask(7, -1, 7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotBridgeDataConfig(DataConfigFactory):
@@ -584,7 +643,7 @@ class TrainConfig:
     # How often (in steps) to log training metrics.
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
-    save_interval: int = 5_000
+    save_interval: int = 10_000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
 
@@ -1403,6 +1462,386 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/lvhuaihai/models/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
+    ),
+        TrainConfig(
+            name="pi05_A2D_pour_eef",
+            model=pi0_config.Pi0Config(
+                pi05=True,
+            ),
+            data=LeRobotAlohaDataConfig(
+                repo_id="datasets/a2d_pour",
+                base_config=DataConfig(
+                    prompt_from_task=True,
+                    root="/share/project/wujiling/datasets/a2d_pour",
+                ),
+                assets=AssetsConfig(
+                    assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                    asset_id="a2d_pour",
+                ),
+                default_prompt="Pick up the cup, place it in the correct position, and then pour the coffee into the cup.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                            "images": {
+                                    "cam_high": "observation.images.cam_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                            "state": "observation.eef_state",
+                            "actions": "eef_action",
+                            "prompt": "prompt",
+                            }
+                        )
+                    ]
+                ),
+            ),
+            weight_loader=weight_loaders.PaliGemmaWeightLoader("/share/project/wujiling/checkpoints/base/paligemma_2b/pt_224.npz"),
+            num_train_steps=100_000,
+            batch_size=8,
+        ),
+    TrainConfig(
+        name="pi05_A2D_pour_joint",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+        ),
+        data=LeRobotA2DDataConfig(
+            repo_id="datasets/a2d_pour",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/a2d_pour",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="a2d_pour",
+            ),
+            default_prompt="Pick up the cup, place it in the correct position, and then pour the coffee into the cup.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                        "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                        "state": "observation.joint_state",
+                        "actions": "joint_action",
+                        "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader("/share/project/wujiling/checkpoints/base/paligemma_2b/pt_224.npz"),
+        num_train_steps=100_000,
+        batch_size=8,
+    ),
+    #
+    # finetune config for robotwin
+    #
+    # pi0_base by lora
+    TrainConfig(
+        name="pi0_base_aloha_robotwin_lora",
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/share/project/lyx/RoboTwin/lerobot_data/huggingface/lerobot/open_laptop-demo_clean-50",
+            adapt_to_pi=False,
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
+            base_config=DataConfig(
+                local_files_only=True,  # Set to True for local-only datasets.
+                prompt_from_task=True,  # Set to True for prompt by task_name
+            ),
+        ),
+        freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora",
+                                    action_expert_variant="gemma_300m_lora").get_freeze_filter(),
+        batch_size=32,  # the total batch_size not pre_gpu batch_size
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/lyx/avla/pi/pi0_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=1,  # refer line 359
+    ),
+    TrainConfig(
+        name="pi05_adjust_bottle",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/adjust_bottle_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/adjust_bottle_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="adjust_bottle_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_blocks_ranking_rgb",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/blocks_ranking_rgb_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/blocks_ranking_rgb_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="blocks_ranking_rgb_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_click_alarmclock",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/click_alarmclock_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/click_alarmclock_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="click_alarmclock_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_move_can_pot",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/move_can_pot_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/move_can_pot_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="move_can_pot_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_place_bread_basket",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/place_bread_basket_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/place_bread_basket_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="place_bread_basket_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_grab_roller",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/grab_roller_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/grab_roller_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="grab_roller_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_handover_block",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean/handover_block_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/clean/handover_block_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="handover_block_demo",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=10_000,
+        batch_size=8,
+    ),
+    TrainConfig(
+        name="pi05_robotwin_50multi",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="multi/multitask_demo",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                root="/share/project/wujiling/datasets/multi/multitask_demo",
+            ),
+            assets=AssetsConfig(
+                assets_dir="/share/project/wujiling/checkpoints/base/pi05_base/assets",
+                asset_id="multitask",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/share/project/wujiling/checkpoints/base/pi05_base/params"),
+        num_train_steps=100_000,
+        batch_size=32,
     ),
     #
     # Debugging configs.

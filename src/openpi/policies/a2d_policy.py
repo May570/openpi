@@ -102,7 +102,7 @@ class A2DOutputs(transforms.DataTransformFn):
 
 def _joint_flip_mask() -> np.ndarray:
     """Used to convert between a2d and pi joint angles."""
-    return np.array([1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1, 1])
+    return np.array([1, -1, -1, 1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1])
 
 
 def _normalize(x, min_val, max_val):
@@ -199,4 +199,3 @@ def _encode_actions_inv(actions: np.ndarray, *, adapt_to_pi: bool = False) -> np
         actions = _joint_flip_mask() * actions
         actions[:, [7, 15]] = _gripper_from_angular_inv(actions[:, [7, 15]])
     return actions
-

@@ -5,6 +5,8 @@ data/
 wandb/
 examples/test/
 train_logs/
+out_eval*/
+tools/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -132,6 +134,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.openpi
 env/
 venv/
 ENV/
